@@ -1,45 +1,23 @@
-# Use a slim Python image
-FROM python:3.10-slim AS base
+# Use a lightweight python image
+FROM python:3.10-slim
 
-# Set build argument for GitHub Access Key (Passed at build time)
+# Set working directory
+WORKDIR /app
 
-# Set a dedicated working directory (not root)
-WORKDIR /usr/src/app
-
-### 🔹 SUBMODULE HANDLING (Using HTTPS with Token)
-
-# Install git
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
-
-
-### 🔹 MAIN BUILD
-
-# Install system dependencies for building
+# Install system dependencies (git for pip deps if needed, build stuff)
 RUN apt-get update && apt-get install -y \
-    build-essential  \
-    libpq-dev && \
-    rm -rf /var/lib/apt/lists/*
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy only requirements first for caching dependencies
-COPY r.txt ./
+# Copy requirements and install
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install dependencies with no cache
-RUN pip install -r r.txt
-
-# Copy the rest of the project files into the working directory
+# Copy source code
 COPY . .
 
-# Set environment variables
-ENV PYTHONPATH=/usr/src/app:$PYTHONPATH
+# Set python path to allow imports from current dir
+ENV PYTHONPATH=/app
 
-# Copy the startup script
-COPY startup.sh .
-
-# Make the script executable
-RUN chmod +x startup.sh
-
-# Expose the application port
-EXPOSE 8080
-
-# Run Django using Gunicorn
-CMD ["python main.py"]
+# Default command: run the test script
+CMD ["python", "test_gnn_run.py"]

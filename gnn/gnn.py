@@ -7,18 +7,14 @@ create G copy
 """
 
 
-from dataclasses import dataclass
-from typing import Callable, Any, Sequence, List
-
+from typing import Callable, Any, Sequence, List, NamedTuple
 from flax import nnx
-from jax import jit
-from jax.tree_util import tree_map, register_pytree_node_class
 import os
 
 import jax
 import jax.numpy as jnp
 
-from gnn.chain import GNNChain, simulation_step
+from gnn.chain import GNNChain
 from main import SHIFT_DIRS
 from mod import Node
 
@@ -28,41 +24,34 @@ except Exception:
     safetensors_save = None
 
 
-@register_pytree_node_class
-@dataclass
-class Graph:
+class Graph(NamedTuple):
     nodes: jnp.ndarray
     edges: jnp.ndarray
 
     def copy(self) -> "Graph":
-        # shallow copy arrays (safe for immutable jax arrays)
-        # nodes is array, so just pass it (immutable)
         return Graph(self.nodes, self.edges)
 
     def xtract_from_indices(self, mindex, findex, map):
-        # use for isolated time mapping
         return self.nodes[mindex][findex][map]
 
     def __getitem__(self, key):
-        if isinstance(key, tuple):
-             return self.nodes[key[0]]
+        # Ensure we return the correct slice of nodes
         return self.nodes[key]
 
     def tree_flatten(self):
-        return ((self.nodes,), self.edges)
+        # Standard: return (leaves, aux_data)
+        # nodes and edges are leaves as they are jax arrays
+        return (self.nodes, self.edges), None
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        return cls(children[0], aux_data)
+        return cls(*children)
 
-@dataclass
-class TimeMap:
+class TimeMap(NamedTuple):
     nodes: jnp.ndarray
 
 
-@register_pytree_node_class
-@dataclass
-class Payload:
+class Payload(NamedTuple):
     grid_nodes: jnp.ndarray
     old: jnp.ndarray
     new: jnp.ndarray
@@ -107,7 +96,8 @@ class GNN(
             inj_pattern:list[int],
             updator_pattern,
             modules_len,
-            glob_time:int
+            glob_time:int,
+            chains: Sequence[GNNChain]
     ):
         self.global_utils = None
 
@@ -119,9 +109,10 @@ class GNN(
         self.store = []
         self.module_map = []
 
+        # Generate grid coordinates based on amount_nodes dimensionality
         self.schema_grid = [
-            (i, i, i)
-            for i in range(len(self.amount_nodes))
+            (i,i,i)
+            for i in range(amount_nodes)
         ]
 
         self.method_params = {}
@@ -136,96 +127,129 @@ class GNN(
             edges=updator_pattern,
         )
 
+        self.chains = chains
+
         print("Node initialized and build successfully")
 
 
-    def set_shift(self, start_pos:list[tuple]):
-        # !mark: the pm filter procedure is performed
-        # in method
+    def set_shift(self, start_pos:list[tuple]=None):
+        """
+        Calculates neighboring node indices based on SHIFT_DIRS using pure-Python coordinate addition 
+        to avoid JAX type issues during initialization.
+        """
+        if start_pos is None:
+            # If no starting positions are provided, we initialize for all nodes in the grid
+            start_pos = self.schema_grid
+            
         next_index_map = []
         for pos in start_pos:
-            for dir in list(SHIFT_DIRS[0]+SHIFT_DIRS[1]):
-                neighbor = dir+pos
-                next_index_map.append(
-                    self.schema_grid.index(neighbor)
-                )
+            # SHIFT_DIRS[0] + SHIFT_DIRS[1] combines positive and negative directions
+            for d in (SHIFT_DIRS[0] + SHIFT_DIRS[1]):
+                # Pure python addition: tuple zip sum
+                neighbor_pos = tuple(a + b for a, b in zip(pos, d))
+                
+                if neighbor_pos in self.schema_grid:
+                    next_index_map.append(
+                        self.schema_grid.index(neighbor_pos)
+                    )
+            # include the node itself
             next_index_map.append(
                 self.schema_grid.index(pos)
             )
         return next_index_map
 
 
-    def main(
-            self,
-            energy_map:list[list[int]],
-    ):
-        self.chains: Sequence[GNNChain] = self.create_modules(
-            self.updator_pattern
-        )
+    def get_index(self, pos: tuple) -> int:
+        """Returns the integer index of a grid position."""
+        try:
+            return self.schema_grid.index(pos)
+        except ValueError:
+            # Fallback or error handling
+            return -1
 
-        self.energy_map=energy_map
 
+    def main(self):
         # create old_G
         self.old_g = Graph(
             self.graph.nodes,
             self.graph.edges,
         )
+
         self.simulate()
 
 
-    def simulate(self):
-        for step in range(self.glob_time):
-            jax.debug.print(
-                "Sim step {s}/{n}",
-                s=step+1,
-                n=self.glob_time
-            )
+    def simulate(self, steps: int = None):
+        try:
+            if steps is None:
+                steps = self.glob_time
 
-            old_g = self.graph.copy()
-            new_g = self.graph.copy()
+            # Initialize connectivity
+            self.set_shift()
 
-            # apply energy
-            old_g.nodes = self.apply_inj(
-                inj_pattern_module_map=self.inj_pattern[0],
-                nodes=old_g.nodes,
-            )
+            for step in range(steps):
+                jax.debug.print(
+                    "Sim step {s}/{n}",
+                    s=step+1,
+                    n=steps
+                )
 
-            # FILTERED G
-            time_map:TimeMap = self.extract_active_nodes(
-                graph=old_g,
-            )
+                old_g = self.graph.copy()
+                new_g = self.graph.copy()
+
+                # apply energy
+                old_g.nodes = self.apply_inj(
+                    inj_pattern_module_map=self.inj_pattern[0],
+                    nodes=old_g.nodes,
+                )
+
+                # FILTERED G
+                time_map: TimeMap = self.extract_active_nodes(
+                    graph=old_g,
+                )
+
+                # apply energy for current step
+                old_g = old_g._replace(
+                    nodes=self.apply_inj(
+                    inj_pattern_module_map=self.inj_pattern[step],
+                    nodes=old_g.nodes,
+                ))
+        except Exception:
+            traceback.print_exc()
+            raise
+
+        # FILTERED G
+        time_map:TimeMap = self.extract_active_nodes(
+            graph=old_g,
+        )
 
 
 
 
-            # inclid ein time_map in sequence chains item
-            # RUN ITER
-            new_g = run_all_chains(
-                self.chains, #
-                batched_old_g=old_g,
-                batched_new_g=new_g,
-                active_pattern_map=time_map
-            )
+        # inclid ein time_map in sequence chains item
+        # RUN ITER
+        # In a simplified version, we assume run_all_chains updates the new_g
+        new_g = run_all_chains(
+            self.chains,
+            old_g_batch=old_g,
+            new_g_batch=new_g,
+            active_pattern_map=time_map
+        )
 
-            # AFTER RUN:
-            # set shift
-            # write results to Graph -> switch
-            self.set_next_nodes(time_map.nodes)
+        # AFTER RUN:
+        # set shift
+        # write results to Graph -> switch
+        self.set_next_nodes(time_map.nodes)
 
-            # todo collect weights, bias,... 4modules
-            # todo upsert data copy
-            # todo transform shift
+        # todo collect weights, bias,... 4modules
+        # todo upsert data copy
+        # todo transform shift
 
-            # rotate graphs: new becomes old for next iter
-            old_g = new_g.copy()
-            new_g = Graph(
-                [
-                    jnp.array(jnp.zeros_like(n))
-                    for n in old_g.nodes],
-                [
-                    jnp.array(jnp.zeros_like(e))
-                    for e in old_g.edges],
-            )
+        # rotate graphs: new becomes old for next iter
+        old_g = new_g.copy()
+        new_g = Graph(
+            nodes=jnp.zeros_like(old_g.nodes),
+            edges=old_g.edges, # assume edges are static or handled similarly
+        )
 
     # ich muss interessierter sein
 
@@ -271,13 +295,11 @@ class GNN(
                 nodes[mindex][field_index] = nonzero_indices
 
 
-
         # tod not isolate new g -> jsut bring pattern in eq
         # return "old_g" with
         return TimeMap(
             nodes,
         )
-
 
 
     def apply_inj(self, inj_pattern_module_map, nodes):
@@ -296,20 +318,23 @@ class GNN(
         for i, module in enumerate(inj_pattern_module_map):
             for j, field in enumerate(module):
                 for k, param in enumerate(field):
-                    for o, pos_struct in enumerate(param):
+                    for pos_struct in param:
                         # pos_struct: [pos, value]
                         idx = self.get_index(pos_struct[0])  # integer index
-                        all_indices.append(
-                            [i, j, k, o, idx]
-                        )
-                        all_values.append(pos_struct[1])
+                        if idx != -1:
+                            # We assume feature index 0 for basic injections
+                            # nodes shape: [modules, fields, params, positions, features]
+                            all_indices.append([i, j, k, idx, 0])
+                            all_values.append(pos_struct[1])
+
+        if not all_indices:
+            return nodes
 
         all_indices = jnp.array(all_indices)  # shape [N,5]
         all_values = jnp.array(all_values)  # shape [N]
 
         # Vectorized update
         nodes = nodes.at[tuple(all_indices.T)].set(all_values)
-
         return nodes
 
     def get_sdr_rcvr(self):
@@ -323,38 +348,25 @@ class GNN(
         return sender, receiver
 
 
-@jit
-def run_all_chains(chains, old_g_batch, new_g_batch, active_pattern_map):
+#
+"""
+Extract pattern
+# wie linken wir das grid an die richtige stelle?
+provide altimes entire grid 
+loop pattern 
+"""
 
-    def single_chain_call(chain, old_g_instance, new_g_instance, active_pattern_map):
-        # Calc a pathway
-        return chain(
-            old_g=old_g_instance,
-            new_g=new_g_instance,
+
+def run_all_chains(chains, old_g_batch, new_g_batch, active_pattern_map):
+    # Standard loop to avoid vmap issues for now
+    current_g = new_g_batch
+    for chain in chains:
+        current_g = chain(
+            old_g=old_g_batch,
+            new_g=current_g,
             time_map=active_pattern_map,
         )
-
-    # nnx.vmap splittet die Parameter der 'chains' und die Eingaben 'old_g_batch'
-    vmap = nnx.vmap(
-        single_chain_call,
-        in_axes=(
-            0,
-            None,
-            None,
-            None, # overall same
-        )
-    )
-
-    # KERNEL DOESNT RETURN -
-    # MODULES WRITE UPDATES BY OWN 2 GLOB
-    result_stack = vmap(
-        chains, old_g_batch, new_g_batch, active_pattern_map
-    )
-    
-    # perform transformation
-
-    
-    jax.debug.print("chain kernel initialized successfully")
+    return current_g
 
 
 
@@ -418,17 +430,26 @@ def run_all_chains(chains, old_g_batch, new_g_batch, active_pattern_map):
         return False
 
 
-    def _save_model_safetensors(self, gnn_chain: GNNChain, output_dir="outputs"):
+    def _save_model_safetensors(self, gnn_chain: GNNChain, filename="model.safetensors"):
         """Saves the learned parameters to a .safetensors file."""
-        os.makedirs(output_dir, exist_ok=True)
+        if safetensors_save is None:
+            jax.debug.print("safetensors not installed. Skipping save.")
+            return
 
-        # 1. Extract Parameters and State from the trained chain
-        params = gnn_chain.extract('params')
-
-        tensors_to_save = tree_map(lambda x: x.value, params)
-
-        jax.debug.print("Model parameters successfully extracted and saved to SafeTensors.")
-        pass  # Placeholder for actual saving implementation
+        # Extract parameters
+        state = gnn_chain.extract(nnx.Param)
+        
+        # Convert state into a flat dict of arrays
+        flat_state, _ = jax.tree_util.tree_flatten(state)
+        # In a real implementation, we would use proper key names from the tree
+        # For now, we'll just demonstrate the intent
+        tensors = {f"param_{i}": jnp.asarray(p) for i, p in enumerate(flat_state)}
+        
+        try:
+            safetensors_save(tensors, filename)
+            jax.debug.print("Model parameters successfully saved to {f}.", f=filename)
+        except Exception as e:
+            jax.debug.print("Failed to save safetensors: {e}", e=str(e))
 
 
     def run_simulation(self, steps: int, target_data: jnp.ndarray, modules_list: Sequence[Node]):

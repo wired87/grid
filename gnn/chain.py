@@ -22,8 +22,7 @@ class GNNChain(nnx.Module):
     def __init__(self, method_modules: Sequence[Node]):
         self.method_modules = method_modules
 
-    @jit
-    def __call__(self, old_g, new_g=None) -> jnp.ndarray:
+    def __call__(self, old_g, new_g=None, time_map=None) -> jnp.ndarray:
         """
         Runs one simulation step (t -> t+1) 100% on GPU.
         """
@@ -37,11 +36,11 @@ class GNNChain(nnx.Module):
 
         # calc each module call
         for method_module in self.method_modules:
-            self.new_g = self.processor(method_module)
+            self.new_g = self.processor(method_module, time_map)
 
         return self.new_g
 
-    def processor(self, module:Node):
+    def processor(self, module:Node, time_map):
         """
         Method process all
         """
@@ -53,6 +52,7 @@ class GNNChain(nnx.Module):
         updated_g = module(
             old_g=self.old_g,
             new_g=self.new_g,
+            time_map=time_map
         )
         jax.debug.print("Simulations Iteration finished for: {defid}", defid=module.method_id)
         return updated_g

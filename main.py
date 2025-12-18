@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 
+from guard import Guard
 
 SHIFT_DIRS = [
      [
@@ -57,10 +58,22 @@ progress:
 - inj_pattern -> set stimuli for all fields
 """
 
+GUARD = None
+def deploy_guard():
+    ref = Guard.options(
+        lifetime="detached",
+        name="GUARD"
+    ).remote()
+
+    ref.main.remote()
+    print("deploy_guard finished")
+    return ref
+
+
 def main():
     print(f"Initializing Simulation with JAX backend: {jax.devices()[0]}")
     # todo demo data structures
-
+    GUARD = deploy_guard()
 
 
 if __name__ == "__main__":

@@ -1,12 +1,4 @@
 import jax.numpy as jnp
-from jax import jit
-
-from app_utils import ENVC
-from data import GAUGE_FIELDS, QUARKS, FERM_PARAMS
-
-from sm.fermion.ferm_creator import FermCreator
-from sm.higgs.higgs_creator import HiggsCreator
-from sm.gauge.g_creator import GaugeCreator
 
 class CreateWorld:
 
@@ -27,45 +19,8 @@ class CreateWorld:
             amount_nodes
     ):
 
-        # Creator classes
-        self.g_creator = GaugeCreator(
-            g_utils=None,
-        )
-
-        self.ferm_creator = FermCreator(
-            g=None,
-        )
-
-        self.higgs_creator = HiggsCreator(
-            g=None,
-        )
-
-        self.amount_nodes = amount_nodes
-        self.gv = list(GAUGE_FIELDS.values())
-        self.quarks = list(QUARKS.values())
-        self.ferms = list(FERM_PARAMS.values())
 
         self.soa = {}
-
-
-    def create_world(self, ntype):
-        # todo
-        dim=3
-
-        self.world = jnp.meshgrid(
-            jnp.array(
-                self.get_point(
-                    ntype,
-                    jnp.int64(
-                        ENVC["d"] * i
-                    )
-                )
-                for i in range(self.world_cfg["amount_nodes"])
-            )for _ in range(dim)
-        )
-
-
-
 
 
     def get_point(self, ntype, pos):

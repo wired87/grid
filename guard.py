@@ -27,17 +27,19 @@ class Guard:
         self.energy_map = os.getenv("ENERGY_MAP")
 
         #PARAMS
-        self.chains: Sequence[GNNChain] = self.create_modules(self.updator_pattern)
+        self.chains: Sequence[GNNChain] = self.create_modules(
+            self.updator_pattern
+        )
 
     def create_modules(
             self,
             updator_pattern,
     ):
+        # CREATE MODULE CHAINS BASED ON GIVEN
         for chain_struct in updator_pattern:
-            chain_struct = GNNChain(
+            chain_struct = GNNChain( # module
                 modules_list=[
-
-                    Node(
+                    Node( # all method
                         *args
                     )
                     for args in chain_struct
@@ -58,21 +60,24 @@ class Guard:
             self.db,
             self.gpu
         )
-        print("PREPARE FINISHED")
-
-
-    def run(self):
-        # start sim on gpu
-        gnn = GNN(
+        self.gnn = GNN(
             amount_nodes=self.amount_nodes,
             modules_len=len(self.db),
             updator_pattern=self.updator_pattern,
             nodes=self.nodes,
             inj_pattern=self.injection_pattern,
             glob_time=self.time,
+            chains=self.chains
         )
+        print("PREPARE FINISHED")
 
-        gnn.main(self.chains)
+
+    def run(self):
+        # start sim on gpu
+
+        ray.get(
+            self.gnn.main()
+        )
         print("RUN FINISHED")
 
     def finish(self):

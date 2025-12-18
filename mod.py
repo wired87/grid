@@ -83,6 +83,7 @@ class Node(nnx.Module):
             outp_pattern: Tuple, #
             in_axes_def: Tuple, #
             method_id:str, #
+            rngs: nnx.Rngs,
     ):
         self.weight = nnx.Param(
             jax.random.normal(
@@ -92,14 +93,13 @@ class Node(nnx.Module):
         )
         self.bias = nnx.Param(jnp.array([0.0]))  # Simple bias for the equation
 
-        # Static pattern definitions
+        # Static pattern definitions - these should NOT be JAX arrays to allow tuple indexing
         self.runnable = jax.tree_util.Partial(runnable)
-        self.inp_patterns = jnp.asarray(inp_patterns)
+        self.inp_patterns = inp_patterns # Keep as list of tuples
         self.outp_pattern = outp_pattern
         self.in_axes_def = in_axes_def
         self.method_id = method_id
 
-    @jit
     def __call__(
             self,
             old_g: jnp.ndarray,  # Use jnp.ndarray for GPU efficiency
@@ -110,34 +110,33 @@ class Node(nnx.Module):
         self.old_g=old_g
         self.new_g=new_g
 
-        vmapped_kernel = vmap(
-            self.proces_collection,
-            in_axes=(
-                0, #method param pattern
-                None
-            ),
-        )
-        # die layer des env sind die zeit
-
-
-        # each input val represents a stack
-        # collection of all
-
-        compiled_result = vmapped_kernel(
-            self.inp_patterns,
-            time_map
-        )
-
+        # Iterate over static patterns for this module
+        # Note: vmapped_kernel iterates over self.inp_patterns
+        # Since self.inp_patterns is a list, we might need a standard loop 
+        # or list comprehension here to keep it static.
+        results = []
+        for p_idx, patterns in enumerate(self.inp_patterns):
+             # patterns here is the nested tuple list for one pattern execution
+             res = self.proces_collection(patterns, time_map)
+             results.append(res)
+             
+        # Stack results or merge them into new_g
+        # For this demo, we assume the kernel writes to new_g, 
+        # but pure functions should return the updated bits.
         return self.new_g
 
 
-    def proces_collection(self, patterns, time_map):
+    def proces_collection(
+            self,
+            patterns,
+            time_map,
+    ):
         vmapped_kernel = vmap(
             self.runnable,
             in_axes=self.in_axes_def,
         )
 
-        # each input val represents a stack
+        # each inp  ut val represents a stack
         # collection of all
         field_based_calc_result = vmapped_kernel(
             *self.get_inputs(
@@ -153,10 +152,19 @@ class Node(nnx.Module):
         # Efficiently extract inputs from the graph array
         param_emap = []
         for p in patterns:
-            param_grid = self.old_g[tuple(p)]
-
-            param_emap.append(param_grid[emap[tuple(p)]])
-
-            # todo etract time map
-            #param_emap.append(emap_item)
+            # Extract the slice for this specific pattern p=(m, f, p)
+            # p should be a tuple of indices
+            # If p=(m, f, p), param_grid is the [Pos, Feat] array.
+            
+            # DEBUG
+            # jax.debug.print("Processing pattern p={p}", p=p)
+            
+            param_grid = self.old_g.nodes[tuple(p)]
+            
+            # emap.nodes[tuple(p)] is the [Pos] mask for this field.
+            mask = emap.nodes[tuple(p)]
+            
+            # Slice it: emap_item is [ActivePos, Feat]
+            emap_item = param_grid[mask]
+            param_emap.append(emap_item)
         return param_emap

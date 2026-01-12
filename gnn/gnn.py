@@ -5,18 +5,15 @@ inject nodes
 identify nodes e > 0
 create G copy
 """
-
-
 from typing import Callable, Any, Sequence, List, NamedTuple
 from flax import nnx
-import os
 
 import jax
 import jax.numpy as jnp
+from jax import jit
 
-from gnn.chain import GNNChain
-from main import SHIFT_DIRS
-from mod import Node
+from dtypes import Graph, TimeMap
+from utils import SHIFT_DIRS
 
 try:
     from safetensors.numpy import save_file as safetensors_save
@@ -24,38 +21,7 @@ except Exception:
     safetensors_save = None
 
 
-class Graph(NamedTuple):
-    nodes: jnp.ndarray
-    edges: jnp.ndarray
 
-    def copy(self) -> "Graph":
-        return Graph(self.nodes, self.edges)
-
-    def xtract_from_indices(self, mindex, findex, map):
-        return self.nodes[mindex][findex][map]
-
-    def __getitem__(self, key):
-        # Ensure we return the correct slice of nodes
-        return self.nodes[key]
-
-    def tree_flatten(self):
-        # Standard: return (leaves, aux_data)
-        # nodes and edges are leaves as they are jax arrays
-        return (self.nodes, self.edges), None
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        return cls(*children)
-
-class TimeMap(NamedTuple):
-    nodes: jnp.ndarray
-
-
-class Payload(NamedTuple):
-    grid_nodes: jnp.ndarray
-    old: jnp.ndarray
-    new: jnp.ndarray
-    edges: jnp.ndarray
 
 class GNN(
     nnx.Module
@@ -97,7 +63,8 @@ class GNN(
             updator_pattern,
             modules_len,
             glob_time:int,
-            chains: Sequence[GNNChain]
+            chains,
+            energy_map  # Added energy_map parameter
     ):
         self.global_utils = None
 
@@ -120,6 +87,7 @@ class GNN(
 
         self.modules_len=modules_len
         self.inj_pattern = inj_pattern
+        self.energy_map = energy_map  # Store energy_map
 
 
         self.graph = Graph(
@@ -176,6 +144,7 @@ class GNN(
         )
 
         self.simulate()
+        self.save_model("model.safetensors")
 
 
     def simulate(self, steps: int = None):
@@ -197,42 +166,42 @@ class GNN(
                 new_g = self.graph.copy()
 
                 # apply energy
-                old_g.nodes = self.apply_inj(
-                    inj_pattern_module_map=self.inj_pattern[0],
+                updated_nodes = self.apply_inj(
+                    step=step,
                     nodes=old_g.nodes,
                 )
+
+                old_g = Graph(nodes=updated_nodes, edges=old_g.edges)
 
                 # FILTERED G
                 time_map: TimeMap = self.extract_active_nodes(
                     graph=old_g,
                 )
 
-                # apply energy for current step
-                old_g = old_g._replace(
-                    nodes=self.apply_inj(
-                    inj_pattern_module_map=self.inj_pattern[step],
-                    nodes=old_g.nodes,
-                ))
-        except Exception:
-            traceback.print_exc()
+                # inclid ein time_map in sequence chains item
+                # RUN ITER
+                # In a simplified version, we assume run_all_chains updates the new_g
+                new_g = run_all_chains(
+                    self.chains,
+                    old_g_batch=old_g,
+                    new_g_batch=new_g,
+                    active_pattern_map=time_map
+                )
+
+
+                # AFTER RUN:
+                # set shift
+                # write results to Graph -> switch
+                self.set_next_nodes(time_map.nodes)
+
+
+        except Exception as e:
+            jax.debug.print(f"Err simulate: {e}")
             raise
 
         # FILTERED G
         time_map:TimeMap = self.extract_active_nodes(
             graph=old_g,
-        )
-
-
-
-
-        # inclid ein time_map in sequence chains item
-        # RUN ITER
-        # In a simplified version, we assume run_all_chains updates the new_g
-        new_g = run_all_chains(
-            self.chains,
-            old_g_batch=old_g,
-            new_g_batch=new_g,
-            active_pattern_map=time_map
         )
 
         # AFTER RUN:
@@ -302,40 +271,70 @@ class GNN(
         )
 
 
-    def apply_inj(self, inj_pattern_module_map, nodes):
+    def apply_inj(self, step, nodes):
         """
-        inj_pattern_module_map : current cluster def for injections
-        inj_pattern[current_time]:
-            list[module] -> list[field] -> list[param] -> list[pos_struct]
-            pos_struct = [pos, value]
-        nodes: jax.numpy array, shape = [modules, fields, params, positions, features]
+        Applies injections based on self.inj_pattern and current step.
+        Supports the SOA structure: [module, field, param, node_index, schedule]
+        where schedule is list of [time, value].
         """
-
-        # Flatten all positions into single arrays for vectorized scatter
         all_indices = []
         all_values = []
 
-        for i, module in enumerate(inj_pattern_module_map):
-            for j, field in enumerate(module):
-                for k, param in enumerate(field):
-                    for pos_struct in param:
-                        # pos_struct: [pos, value]
-                        idx = self.get_index(pos_struct[0])  # integer index
-                        if idx != -1:
-                            # We assume feature index 0 for basic injections
-                            # nodes shape: [modules, fields, params, positions, features]
-                            all_indices.append([i, j, k, idx, 0])
-                            all_values.append(pos_struct[1])
+        # Check if inj_pattern uses the SOA structure (flat list)
+        # We assume if it's a list and the first item is a list of length 5 (or similar check)
+        # But specifically checking for the DEMO_INPUT style
+        
+        for item in self.inj_pattern:
+            if isinstance(item, list) and len(item) == 5 and isinstance(item[4], list):
+                # SOA structure: [mod, field, param, node_idx, schedule]
+                mod_idx, field_idx, param_idx, node_idx, schedule = item
+                
+                # Check schedule for current time
+                for time_point, value in schedule:
+                    if time_point == step:
+                        # Add to update list
+                        # Assuming feature index 0
+                        all_indices.append([mod_idx, field_idx, param_idx, node_idx, 0])
+                        all_values.append(value)
+            
+            # Fallback or other structure handling can be added here if needed
+            # For now, we prioritize the SOA structure as requested
 
         if not all_indices:
             return nodes
 
-        all_indices = jnp.array(all_indices)  # shape [N,5]
-        all_values = jnp.array(all_values)  # shape [N]
+        all_indices = jnp.array(all_indices)  # shape [N, 5]
+        all_values = jnp.array(all_values)    # shape [N]
 
-        # Vectorized update
-        nodes = nodes.at[tuple(all_indices.T)].set(all_values)
+        # Apply using .at[].add() for "injerease" (increase) or .set() if strictly setting
+        # User said "value injerease" -> increase. 
+        # But also "right value to set". 
+        # Injections usually add. We will use add.
+        nodes = nodes.at[tuple(all_indices.T)].add(all_values)
         return nodes
+
+    def save_model(self, filename="model.safetensors"):
+        """Saves the learned parameters of all chains to a .safetensors file."""
+        if safetensors_save is None:
+            jax.debug.print("safetensors not installed. Skipping save.")
+            return
+
+        all_tensors = {}
+        for i, chain in enumerate(self.chains):
+            # Extract parameters
+            state = chain.extract(nnx.Param)
+            # Convert state into a flat dict of arrays
+            flat_state, _ = jax.tree_util.tree_flatten(state)
+            
+            # Add to all_tensors with prefix
+            for j, p in enumerate(flat_state):
+                all_tensors[f"chain_{i}_param_{j}"] = jnp.asarray(p)
+
+        try:
+            safetensors_save(all_tensors, filename)
+            jax.debug.print("Model parameters successfully saved to {f}.", f=filename)
+        except Exception as e:
+            jax.debug.print("Failed to save safetensors: {e}", e=str(e))
 
     def get_sdr_rcvr(self):
         receiver = []
@@ -348,7 +347,7 @@ class GNN(
         return sender, receiver
 
 
-#
+
 """
 Extract pattern
 # wie linken wir das grid an die richtige stelle?
@@ -357,120 +356,25 @@ loop pattern
 """
 
 
+
+
+
 def run_all_chains(chains, old_g_batch, new_g_batch, active_pattern_map):
-    # Standard loop to avoid vmap issues for now
-    current_g = new_g_batch
+    result_stack = []
     for chain in chains:
-        current_g = chain(
+        result = chain(
             old_g=old_g_batch,
-            new_g=current_g,
+            new_g=new_g_batch,
             time_map=active_pattern_map,
         )
-    return current_g
+        result_stack.append(result)
+    jax.debug.print("chain kernel initialized successfully")
+    return result_stack
 
 
 
 
-    def set_nodes(self, mid, data:list[list or Any]):
-        self.graph.nodes[mid] = data
 
-
-    def set_edges(self, mid, index, pattern):
-        self.graph.edges[mid][index] = pattern
-
-
-    def set_field_store_order(self, field_pattern):
-        self.store = field_pattern
-        self.edges = field_pattern
-        self.axis_def = field_pattern
-        self.eqm_map = field_pattern
-
-        # create modules zeit wecheslt die instanz nicht die materie (daten des env ändern sich)
-
-
-    def receive_field(
-            self,
-            data,
-            axis_def,
-            mid,
-            runnable_map: list[Callable],
-            index: int,
-            mindex,
-            edges=None,
-    ):
-
-        """
-        receive a specific field and pattern
-        """
-
-        try:
-            self.store[index]: list[jnp.array] = data
-
-            """
-            self.edges[index]: list[list] = edges
-
-            self.axis_def[index]: list[list] = axis_def
-            """
-            # just receive here nodes
-            self.module_map[index] = Node(
-                runnable_map=runnable_map,
-                index=index,
-                eq_module_index=mid,
-                axis_def=axis_def,
-                amount_nodes=self.amount_nodes,
-                mid=mid,
-            )
-
-            Graph.nodes[mindex][index] = data
-            Graph.edges[mindex][index] = edges
-
-            return True
-        except Exception as e:
-            jax.debug.print("Err receive_field", e)
-        return False
-
-
-    def _save_model_safetensors(self, gnn_chain: GNNChain, filename="model.safetensors"):
-        """Saves the learned parameters to a .safetensors file."""
-        if safetensors_save is None:
-            jax.debug.print("safetensors not installed. Skipping save.")
-            return
-
-        # Extract parameters
-        state = gnn_chain.extract(nnx.Param)
-        
-        # Convert state into a flat dict of arrays
-        flat_state, _ = jax.tree_util.tree_flatten(state)
-        # In a real implementation, we would use proper key names from the tree
-        # For now, we'll just demonstrate the intent
-        tensors = {f"param_{i}": jnp.asarray(p) for i, p in enumerate(flat_state)}
-        
-        try:
-            safetensors_save(tensors, filename)
-            jax.debug.print("Model parameters successfully saved to {f}.", f=filename)
-        except Exception as e:
-            jax.debug.print("Failed to save safetensors: {e}", e=str(e))
-
-
-    def run_simulation(self, steps: int, target_data: jnp.ndarray, modules_list: Sequence[Node]):
-        # 1. Setup: Create the GNN Chain and Optimizer
-        gnn_chain = GNNChain(modules_list)
-        # Use an optimizer (example: Adam)
-        optimizer = nnx.optim.Adam(gnn_chain.extract('params'))
-
-        current_g = self.graph.nodes  # Get initial data (ensure it's a JAX array on GPU)
-
-        # 2. Simulation Loop (JAX-compiled core)
-        for step in range(steps):
-            # The entire training step is compiled and runs on GPU
-            predicted_g, gnn_chain, loss = simulation_step(
-                gnn_chain, current_g, optimizer, target_data[step]
-            )
-            current_g = predicted_g  # New state becomes the old state for the next step
-
-        # 3. Final Saving after simulation
-        self._save_model_safetensors(gnn_chain)
-        return "Simulation complete and model saved."
 
 
 

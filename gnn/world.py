@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 
 class CreateWorld:
@@ -16,43 +17,27 @@ class CreateWorld:
 
     def __init__(
             self,
-            amount_nodes
+            amount_nodes,
+            db,
+            gpu,
     ):
-
-
+        self.amount_nodes=amount_nodes
+        self.db=db
+        self.gpu=gpu
         self.soa = {}
 
-
-    def get_point(self, ntype, pos):
-        # todo optimize ram used, by loop adapted pos over zero point field
-        # todo integrat just operator interaction rules, so in eac iter you calc param1 -> param2 for each field. follow the pathway (e.g. param1+param2*param3and4)
-        """
-        # save as bytes
-        int(i | pos) # or merge str(i)+str(pos)
-        for i in range(len(ALL_SUBS))
-        """
-
-        field = []
-        # Sammle PHI-Daten
-        field.append(
-            self.higgs_creator.higgs_params_batch(
-                True
-            )
-        )
-
-        """
-        format:
-        [
-        [field_index:int, [items map:int]]
-        ]
-        """
-
-        index_map = [
-            [i, [j for j in range(len(list(v)))]]
-            for i, v in enumerate(field)
-        ]
-
-        print("index_map", index_map)
-        return [pos, jnp.array(jnp.array(field))]
-
+    def build_db(self):
+        # create world
+        jax.debug.print("build_db start")
+        transformed = []
+        for module_fields in self.db:
+            for field, axis_def in module_fields:
+                for value, ax in zip(field, axis_def):
+                    if ax:  # 0
+                        # fill db
+                        value = jax.device_put(jnp.repeat(
+                            jnp.asarray(jnp.zeros_like(value)),
+                            self.amount_nodes
+                        ), self.gpu)
+        jax.debug.print("build_db fisniehed")
 

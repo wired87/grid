@@ -1,17 +1,16 @@
 """
-
 bias kb
 Ich habe das Bias-Element in das Modul eingefügt, da es ein Goldstandard in den meisten modernen ML-Modellen ist und notwendig ist, um die Expressivität deiner Gleichung zu erhöhen.📝 Was ist das Bias?BegriffErklärung für Nicht-ML-SpezialistenWarum du es brauchstBias ($\mathbf{b}$)Stell dir das Bias als den Startwert oder den Grund-Offset einer Gleichung vor. Es ist ein einzelner, lernbarer Wert, der zur gewichteten Summe der Eingangsdaten addiert wird (z.B. $y = Wx + \mathbf{b}$).Es ermöglicht der Gleichung, ein Ergebnis von Null zu verschieben. Ohne Bias müsste das gesamte Netzwerk durch die Gewichte einen perfekten Nullpunkt treffen, was oft unmöglich ist, wenn die Daten selbst nicht zentriert sind.Der Wert [0.0]Dies ist der Startwert (Initialisierung). Er sagt: "Starte mit null Offset." Das Training wird diesen Wert später anpassen.Wenn du mit [0.0] startest, lässt du das Netzwerk von einem neutralen Punkt aus lernen.🎯 Kannst du in jedem Modul den gleichen Startwert verwenden?Ja, als Startwert (Initialisierung) kannst du in jedem Modul den gleichen Wert ([0.0]) verwenden. Dies ist ein häufiges, neutrales Vorgehen.Wichtig: Der gelernte Wert des Bias wird in jedem Modul unterschiedlich sein, da jedes Modul eine andere Gleichung auf verschiedenen Graphen-Regionen löst.📐 Wie wählst du die Shape?Die Shape (Form/Dimension) des Bias muss mit der Shape des Outputs deines Moduls übereinstimmen.Dein Fall: Da dein Modul eine einzelne Gleichung darstellt und vermutlich einen einzelnen Wert (oder einen Vektor von Werten) an einer bestimmten Stelle im neuen Graphen (new_g.nodes) berechnet, ist (1,) oder eine ähnliche Form (wie jnp.array([0.0])) oft korrekt.Regel: Wenn dein Modul 5 Features ausgibt, muss das Bias-Array ebenfalls 5 Elemente haben, damit es elementweise addiert werden kann.
-
 """
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from jax import jit, vmap
+from jax import vmap
 from typing import Callable, List, Tuple
-from dataclasses import replace
-from main import SHIFT_DIRS
+
+from gnn.gnn import Graph
+from utils import SHIFT_DIRS, DIM
 
 
 class ModuleUtils:
@@ -102,8 +101,8 @@ class Node(nnx.Module):
 
     def __call__(
             self,
-            old_g: jnp.ndarray,  # Use jnp.ndarray for GPU efficiency
-            new_g: jnp.ndarray,
+            old_g: Graph,  # Use jnp.ndarray for GPU efficiency
+            new_g: Graph,
             time_map
     ) -> jnp.ndarray:
         #
@@ -131,6 +130,16 @@ class Node(nnx.Module):
             patterns,
             time_map,
     ):
+        # Debug: check what we're working with
+        inputs = self.get_inputs(patterns, time_map)
+        jax.debug.print(
+            "proces_collection - method_id: {mid}, patterns: {p}, in_axes_def: {axes}, num_inputs: {n}",
+            mid=self.method_id,
+            p=patterns,
+            axes=self.in_axes_def,
+            n=len(inputs)
+        )
+        
         vmapped_kernel = vmap(
             self.runnable,
             in_axes=self.in_axes_def,
@@ -138,33 +147,52 @@ class Node(nnx.Module):
 
         # each inp  ut val represents a stack
         # collection of all
-        field_based_calc_result = vmapped_kernel(
-            *self.get_inputs(
-                patterns,
-                time_map
-            )
-        )
+        field_based_calc_result = vmapped_kernel(*inputs)
         # media merge modular
         # Return the result instead of side-effect
         return field_based_calc_result
 
     def get_inputs(self, patterns, emap):
-        # Efficiently extract inputs from the graph array
-        param_emap = []
+        # Receive alledge mapping for all params        param_emap = []
+        method_params = []
         for p in patterns:
             # Extract the slice for this specific pattern p=(m, f, p)
             # p should be a tuple of indices
             # If p=(m, f, p), param_grid is the [Pos, Feat] array.
             
-            # DEBUG
-            # jax.debug.print("Processing pattern p={p}", p=p)
+            # DEBUG: Handle both int and iterable cases
+            if isinstance(p, int):
+                # If p is a single integer, wrap it in a tuple
+                param_grid_map = (p,)
+            else:
+                # If p is already iterable (list/tuple), convert to tuple
+                param_grid_map = tuple(p)
             
-            param_grid = self.old_g.nodes[tuple(p)]
+            param_grid = self.old_g.nodes[param_grid_map]
             
             # emap.nodes[tuple(p)] is the [Pos] mask for this field.
-            mask = emap.nodes[tuple(p)]
+            #mask = emap.nodes[param_grid_map]
             
             # Slice it: emap_item is [ActivePos, Feat]
-            emap_item = param_grid[mask]
-            param_emap.append(emap_item)
-        return param_emap
+            #emap_item = param_grid[mask]
+            #param_emap.append(emap_item)
+            method_params.append(param_grid)
+        return method_params
+
+
+
+    def mark_dmu_surrounding_acitve_neighbor(
+            self,
+            mu,
+            active,
+            dx
+    ):
+        # todo
+        mu_eff = mu * active
+        lap = (
+            jnp.roll(mu_eff, 1, 0) + jnp.roll(mu_eff, -1, 0) +
+            jnp.roll(mu_eff, 1, 1) + jnp.roll(mu_eff, -1, 1) +
+            jnp.roll(mu_eff, 1, 2) + jnp.roll(mu_eff, -1, 2) -
+            6 * mu_eff
+        ) / dx ** 2
+        return lap * active

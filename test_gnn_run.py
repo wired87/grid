@@ -1,8 +1,5 @@
-
-import jax
 import jax.numpy as jnp
 from flax import nnx
-from jax.tree_util import Partial
 from gnn.gnn import Graph
 from mod import Node
 

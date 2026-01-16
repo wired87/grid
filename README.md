@@ -21,7 +21,7 @@ graph TD
 ## 🛠️ Key Components
 
 *   **`GNN` (Engine)**: Manages global state (`Graph`), simulation loops, and data injections.
-*   **`GNNChain`**: Orchestrates a sequence of `Node` modules, executed as a single compiled JAX block.
+*   **`GnnModuleChain`**: Orchestrates a sequence of `Node` modules, executed as a single compiled JAX block.
 *   **`Node`**: The fundamental physics unit. Encapsulates equations and state (weights) using `nnx.Module`.
 
 ## ⚡ Features
@@ -31,4 +31,4 @@ graph TD
 *   **Distributed**: Designed to run as a Ray actor (`Guard`) for scalable deployment.
 
 ## � Quick Start
-Define physics in a `Node`, wrap in a `GNNChain`, and pass to the `GNN` engine for execution on the requested logic grid.
+Define physics in a `Node`, wrap in a `GnnModuleChain`, and pass to the `GNN` engine for execution on the requested logic grid.

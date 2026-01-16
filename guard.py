@@ -1,12 +1,16 @@
 import os
 import json
 from typing import Sequence
-
 import jax
 import jax.numpy as jnp
-from gnn.chain import GNNChain
+from dtypes import NodeDataStore, TimeMap
+from gnn.calc_layer import CalcLayer
+from gnn.chain import GnnModuleChain
+from gnn.db_layer import DBLayer
 from gnn.gnn import GNN
+from gnn.injector import InjectorLayer
 from mod import Node
+from utils import create_runnable
 
 
 def identity_op(*args):
@@ -14,8 +18,9 @@ def identity_op(*args):
     # Must return array of correct shape for bias addition (which adds to output)
     return args[0] if args else jnp.array([0.0])
 
-class Guard:
 
+class Guard:
+    # todo prevaliate features to avoid double calculations
     def __init__(self):
         #JAX
         import jax
@@ -23,93 +28,71 @@ class Guard:
         jax.config.update("jax_platform_name", platform)  # must be run before jnp
         self.gpu = jax.devices(platform)[0]
 
+        self.model = self.set_model_skeleton()
 
-        #ENV
-        # Load and parse DB
-        db_str = os.getenv("DB")
-        self.db = json.loads(db_str) if db_str else []
+        # SET PATTERNS
+        patterns = os.getenv("PATTERNS")
+        self.patterns = json.loads(patterns)
+        for key, pattern in self.patterns.items():
+            setattr(self, key.lower(), json.loads(pattern) if pattern else [])
 
-        # graph patter
-        # Load and parse UPDATOR_PATTERN
-        up_pat_str = os.getenv("UPDATOR_PATTERN")
-        self.updator_pattern = json.loads(up_pat_str) if up_pat_str else []
         self.amount_nodes = int(os.getenv("AMOUNT_NODES", 10))
         self.time = int(os.getenv("SIM_TIME", 10))  # Default to 10 steps
 
-        # inj
-        # Load and parse INJECTION_PATTERN
-        inj_pat_str = os.getenv("INJECTION_PATTERN")
-        self.injection_pattern = json.loads(inj_pat_str) if inj_pat_str else []
 
-        # modules
-        # Load and parse ENERGY_MAP
-        e_map_str = os.getenv("ENERGY_MAP")
-        self.energy_map = json.loads(e_map_str) if e_map_str else []
+        # layers
+        self.inj_layer = InjectorLayer()
+        self.db_layer = DBLayer(self.amount_nodes)
 
-        #PARAMS
-        self.chains: Sequence[GNNChain] = self.create_modules()
+        self.gnn_layer = GnnLayer()
+        self.calc_layer = CalcLayer()
+
+        # PARAMS
+        self.chains: Sequence[
+            GnnModuleChain
+        ] = self.create_modules()
 
 
-    def create_modules(
-            self,
-    ):
-        # CREATE MODULE CHAINS BASED ON GIVEN
-        from flax import nnx
-        import jax
-        
-        chains = []
-        for chain_struct in self.updator_pattern:
-            # Create rngs for this chain
-            rngs = nnx.Rngs(params=jax.random.PRNGKey(42))
-            
-            chain_nodes = []
-            for args in chain_struct:
-                # Sanitize args from DEMO_INPUT format
-                print(f"Processing chain item arg0 type: {type(args[0])}")
-                
-                # args is [desc, inp, outp, in_axes, method_id] (5 items)
-                sanitized_args = list(args)
-                
-                # 1. Runnable (replace string with identity)
-                if isinstance(sanitized_args[0], str):
-                    print("Replacing string runnable with identity_op")
-                    sanitized_args[0] = identity_op
-                else:
-                    print(f"Runnable is not string, it is {type(sanitized_args[0])}")
 
-                
-                # 2. In-Axes (replace string list with expected tuple/None)
-                # DEMO_INPUT has [",", " ", "0"]. This seems to be CSV parsing artifacts? 
-                # Let's default to (0,) or None for now to make it run.
-                # Node expects in_axes_def to be passed to vmap.
-                # Check mod.py: vmap(self.runnable, in_axes=self.in_axes_def)
-                # If we use identity_op, in_axes needs to match inputs.
-                # For safety, let's set it to valid defaults or parse if possible.
-                # Assuming 0 for all inputs for simple vmap.
-                if isinstance(sanitized_args[3], list):
-                     # Hack: standard in_axes usually e.g. (0, None)
-                     # Let's force it to None or 0.
-                     sanitized_args[3] = 0
+    def gnn_skeleton(self):
+        # SET EMPTY STRUCTURE OF MODEL
+        model_skeleton = []
+        for i, module in enumerate(self.updator_pattern):
+            model_skeleton[i] = []
 
-                # 3. Method ID (ensure str)
-                sanitized_args[4] = str(sanitized_args[4])
-                
-                # Check length to avoid RNG collision
-                if len(sanitized_args) > 5:
-                    sanitized_args = sanitized_args[:5]
-
-                chain_nodes.append(
-                    Node(
-                        *sanitized_args,
-                        rngs=rngs
-                    )
+            for j, method_struct in enumerate(module):
+                model_skeleton[i].append(
+                    [] #
                 )
-            
-            chain = GNNChain(
-                method_modules=chain_nodes,
-            )
-            chains.append(chain)
-        return chains
+                field_block_matrice = []
+                for adj_entry in method_struct:
+
+                    # adj_entry = entry with 2 inputs
+                    input_adj = adj_entry[0]
+                    return_adj = adj_entry[1]
+
+                    # merge in/out adj
+                    adj_mtx = [*[input_adj], return_adj]
+
+                    feature_complex = []
+
+                    # store
+                    feature_store = [feature_complex, adj_mtx]
+
+                    # add field blcok struct
+                    field_block_matrice.append(
+                        feature_store
+                    )
+
+                # ADD FIELD BLOCK STRUCT TO MODEL
+                model_skeleton[i][j].append(
+                    field_block_matrice
+                )
+        return model_skeleton
+
+
+
+
 
     def main(self):
         self.prepare()
@@ -127,7 +110,7 @@ class Guard:
         self.gnn = GNN(
             amount_nodes=self.amount_nodes,
             modules_len=len(self.db),
-            updator_pattern=self.updator_pattern,
+            updator_pattern=None, # self.updator_pattern,
             nodes=self.nodes,
             inj_pattern=self.injection_pattern,
             glob_time=self.time,
@@ -137,22 +120,6 @@ class Guard:
 
         print("PREPARE FINISHED")
 
-    def build_db(self, amount_nodes, db):
-        # create world
-        jax.debug.print("build_db start")
-        transformed = []
-        for module_fields in db:
-            for field, axis_def in module_fields:
-                for value, ax in zip(field, axis_def):
-                    if ax is not None:  # Fixed: 0 is a valid axis
-                        # fill db
-                        value = jax.device_put(jnp.repeat(
-                            jnp.asarray(jnp.zeros_like(value)),
-                            amount_nodes
-                        ), self.gpu)
-                        transformed.append(value)
-        jax.debug.print("build_db finished")
-        return transformed
 
 
     def run(self):
@@ -165,5 +132,129 @@ class Guard:
         print("DATA DISTRIBUTED")
 
 
+    def simulate(self, steps: int = None):
+        try:
+            if steps is None:
+                steps = self.glob_time
+
+            # Initialize connectivity
+            self.set_shift()
+
+            # History collection
+            self.history = []
+
+            for step in range(steps):
+                jax.debug.print(
+                    "Sim step {s}/{n}",
+                    s=step + 1,
+                    n=steps
+                )
+
+                # apply injections inside db layer
+                self.inj_layer.inject(
+                    step=step,
+                    db_layer=self.db_layer
+                )
+
+                # prepare index map
+                self.db_layer.process_time_step(
+
+                )
+                self.gnn_layer.process_nodes()
+
+                new_g = self.calc_layer.calc_chains()
+
+        except Exception as e:
+            jax.debug.print(f"Err simulate: {e}")
+            raise
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+            for potential_args in chain_struct:
+                if potential_args is None:
+                    continue
+                # Handle potential extra nesting level (e.g. [[arg, ...], [arg, ...]])
+                # flattening it into the chain sequence
+                
+                # Normalize to a list of args_list
+                if isinstance(potential_args, list) and len(potential_args) > 0 and isinstance(potential_args[0], list):
+                    methods_list = potential_args
+                else:
+                    methods_list = [potential_args]
+
+                for args in methods_list:
+                    # Sanitize args from DEMO_INPUT format
+                    # args is [desc, inp, outp, in_axes, method_id] (5 items)
+                    sanitized_args = list(args)
+
+                    # Ensure minimal length
+                    while len(sanitized_args) < 5:
+                        sanitized_args.append(None)
+                    
+                    # 1. Runnable (replace string with identity)
+                    if isinstance(sanitized_args[0], str):
+                        sanitized_args[0] = identity_op
+                    
+                    # 2. In-Axes / Pattern detection
+                    # Correct argument mapping if JSON has patterns at index 3 or 4 but Node expects them at index 1 and 2
+                    
+                    # Check for Input Pattern at Index 3 (Common case in this JSON)
+                    if len(sanitized_args) > 3 and isinstance(sanitized_args[3], list) and (len(sanitized_args[3]) > 0 and isinstance(sanitized_args[3][0], list)):
+                        # If index 1 is not a list (e.g. 0), move it there
+                        if not isinstance(sanitized_args[1], list):
+                            sanitized_args[1] = sanitized_args[3]
+                            sanitized_args[3] = 0 # Reset in_axes to 0
+                    
+                    # Check for Output Pattern (or secondary pattern) at Index 4
+                    if len(sanitized_args) > 4 and isinstance(sanitized_args[4], list):
+                        # If index 2 (outp_pattern) is None/0/not list, move it there
+                        if not isinstance(sanitized_args[2], tuple): # outp_pattern is Tuple
+                             # But here we assume the list from JSON is what we want.
+                             # If arg 2 is None or 0.
+                             if sanitized_args[2] is None or sanitized_args[2] == 0:
+                                sanitized_args[2] = tuple(sanitized_args[4]) # Convert to tuple? Or keep list if Node handles it?
+                                # Node expects Tuple for outp_pattern.
+                                # But let's just move it.
+                                sanitized_args[2] = sanitized_args[4]
+                                # Clean up index 4 (method_id)
+                                sanitized_args[4] = "generated_method_id"
+                        elif not isinstance(sanitized_args[1], list):
+                             # Fallback: if input pattern was NOT found at 3, maybe it's at 4?
+                             sanitized_args[1] = sanitized_args[4]
+                             sanitized_args[4] = "generated_method_id"
+
+                    # Check inputs again
+
+
+                    # Fallback for index 3 if it is a list of strings (axes) -> replace with 0 for safety
+                    if len(sanitized_args) > 3 and isinstance(sanitized_args[3], list) and not isinstance(sanitized_args[3][0], list):
+                         sanitized_args[3] = 0
+
+                    # 3. Method ID (ensure str)
+                    sanitized_args[4] = str(sanitized_args[4])
+                    
+                    # Check length to avoid RNG collision
+                    if len(sanitized_args) > 5:
+                        sanitized_args = sanitized_args[:5]
+
+                    chain_nodes.append(
+                        Node(
+                            *sanitized_args,
+                            rngs=rngs
+                        )
+                    )
+
+"""

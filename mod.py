@@ -2,7 +2,7 @@
 bias kb
 Ich habe das Bias-Element in das Modul eingefügt, da es ein Goldstandard in den meisten modernen ML-Modellen ist und notwendig ist, um die Expressivität deiner Gleichung zu erhöhen.📝 Was ist das Bias?BegriffErklärung für Nicht-ML-SpezialistenWarum du es brauchstBias ($\mathbf{b}$)Stell dir das Bias als den Startwert oder den Grund-Offset einer Gleichung vor. Es ist ein einzelner, lernbarer Wert, der zur gewichteten Summe der Eingangsdaten addiert wird (z.B. $y = Wx + \mathbf{b}$).Es ermöglicht der Gleichung, ein Ergebnis von Null zu verschieben. Ohne Bias müsste das gesamte Netzwerk durch die Gewichte einen perfekten Nullpunkt treffen, was oft unmöglich ist, wenn die Daten selbst nicht zentriert sind.Der Wert [0.0]Dies ist der Startwert (Initialisierung). Er sagt: "Starte mit null Offset." Das Training wird diesen Wert später anpassen.Wenn du mit [0.0] startest, lässt du das Netzwerk von einem neutralen Punkt aus lernen.🎯 Kannst du in jedem Modul den gleichen Startwert verwenden?Ja, als Startwert (Initialisierung) kannst du in jedem Modul den gleichen Wert ([0.0]) verwenden. Dies ist ein häufiges, neutrales Vorgehen.Wichtig: Der gelernte Wert des Bias wird in jedem Modul unterschiedlich sein, da jedes Modul eine andere Gleichung auf verschiedenen Graphen-Regionen löst.📐 Wie wählst du die Shape?Die Shape (Form/Dimension) des Bias muss mit der Shape des Outputs deines Moduls übereinstimmen.Dein Fall: Da dein Modul eine einzelne Gleichung darstellt und vermutlich einen einzelnen Wert (oder einen Vektor von Werten) an einer bestimmten Stelle im neuen Graphen (new_g.nodes) berechnet, ist (1,) oder eine ähnliche Form (wie jnp.array([0.0])) oft korrekt.Regel: Wenn dein Modul 5 Features ausgibt, muss das Bias-Array ebenfalls 5 Elemente haben, damit es elementweise addiert werden kann.
 """
-
+from flax import linen as nn
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -11,6 +11,8 @@ from typing import Callable, List, Tuple
 
 from gnn.gnn import Graph
 from utils import SHIFT_DIRS, DIM
+
+
 
 
 class ModuleUtils:
@@ -58,7 +60,7 @@ class ModuleUtils:
         # create
         return index_map
 
-    def crate_key_map(self, field_type, attr_item) -> list[str]:
+    def crate_key_map(self, field_type, attr_item, G_FIELDS=None) -> list[str]:
         attr_keys = list(attr_item.keys())
         if field_type in G_FIELDS:
             # Just here attrs not
@@ -70,7 +72,12 @@ class Node(nnx.Module):
 
     """
     DEF
-    NNX Module representing a single GNN equation with learnable weights.
+    NNX Module representing a single GNN equation with
+    learnable weights.
+
+    calc -> generate gnn stuff -> paste to gnn_ds -> return None
+
+
     """
 
     # Example parameter (weight) to be learned
@@ -78,104 +85,177 @@ class Node(nnx.Module):
     def __init__(
             self,
             runnable: Callable,
-            inp_patterns: List[Tuple],  # method_list[param_map[]]
+            inp_edge_map: List,  # method_list[param_map[]]
             outp_pattern: Tuple, #
             in_axes_def: Tuple, #
             method_id:str, #
-            rngs: nnx.Rngs,
+            mod_idx:int
     ):
-        self.weight = nnx.Param(
-            jax.random.normal(
-                rngs.params(),
-                (1,)
-            )
-        )
+        self.embedding_dim = 64
         self.bias = nnx.Param(jnp.array([0.0]))  # Simple bias for the equation
 
         # Static pattern definitions - these should NOT be JAX arrays to allow tuple indexing
         self.runnable = jax.tree_util.Partial(runnable)
-        self.inp_patterns = inp_patterns # Keep as list of tuples
+        self.inp_patterns = inp_edge_map
         self.outp_pattern = outp_pattern
         self.in_axes_def = in_axes_def
         self.method_id = method_id
+        self.mod_idx = mod_idx
 
     def __call__(
             self,
             old_g: Graph,  # Use jnp.ndarray for GPU efficiency
             new_g: Graph,
+            gnn_ds,
             time_map
-    ) -> jnp.ndarray:
+    ) -> tuple(Graph, jnp.ndarray):
         #
         self.old_g=old_g
         self.new_g=new_g
+        self.gnn_ds = gnn_ds
 
-        # Iterate over static patterns for this module
-        # Note: vmapped_kernel iterates over self.inp_patterns
-        # Since self.inp_patterns is a list, we might need a standard loop 
-        # or list comprehension here to keep it static.
-        results = []
-        for p_idx, patterns in enumerate(self.inp_patterns):
+
+        outputs = [
+            # each entry represents eq step resutl for single field (entire grid)
+        ]
+
+        inputs = [
+            # each entry represents eq step inputs for single field (entire grid)
+        ]
+
+        #calculate new EQ step for all modules fileds
+        for p_idx, patterns in enumerate(
+                self.inp_patterns
+        ):
              # patterns here is the nested tuple list for one pattern execution
-             res = self.proces_collection(patterns, time_map)
-             results.append(res)
-             
-        # Stack results or merge them into new_g
-        # For this demo, we assume the kernel writes to new_g, 
-        # but pure functions should return the updated bits.
-        return self.new_g
+             outs, ins = self.process_equation(patterns, time_map)
+             inputs.append(ins)
+             outputs.append(outs)
+
+        # transform features
+        features = self.transform_feature(
+            inputs,
+            outputs,
+        )
+
+        for i, feature in enumerate(features):
+            self.gnn_ds[
+                self.mod_idx
+            ][
+                self.method_id
+            ][
+                i
+            ].append(
+                # projections matrices for all ime steps
+                # weights
+                # biases
+                # sloss
+                (
+
+                    feature,
+                )
+            )
 
 
-    def proces_collection(
+
+
+
+
+
+
+        return self.new_g, gnn_ds
+
+
+
+
+
+
+    def send(self):
+        pass
+
+
+
+
+    def receive_features(self):
+        pass
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def transform_feature(
+            self,
+            inputs,
+            outputs,
+    ):
+        jax.debug.print("transform_feature...")
+
+        feature_matrix_eq_tstep = []
+        # combine input output for each field -< todo improve with jax
+        for field_in, field_out in zip(inputs, outputs):
+            field_grid_features = []
+
+            for point_in, point_out in zip(field_in, field_out):
+                # Concatenate for persistency: [1, 2, 4, 9]
+                combined = jnp.concatenate([point_in, point_out], axis=-1)
+
+                # Project to GNN hidden state space
+                field_grid_features = nn.Dense(self.embedding_dim)(combined)
+
+            feature_matrix_eq_tstep.append(
+                field_grid_features
+            )
+        jax.debug.print("transform_feature... done")
+        return feature_matrix_eq_tstep
+
+
+
+
+
+    def process_equation(
             self,
             patterns,
             time_map,
     ):
         # Debug: check what we're working with
         inputs = self.get_inputs(patterns, time_map)
-        jax.debug.print(
-            "proces_collection - method_id: {mid}, patterns: {p}, in_axes_def: {axes}, num_inputs: {n}",
-            mid=self.method_id,
-            p=patterns,
-            axes=self.in_axes_def,
-            n=len(inputs)
-        )
+
         
         vmapped_kernel = vmap(
             self.runnable,
             in_axes=self.in_axes_def,
         )
 
-        # each inp  ut val represents a stack
-        # collection of all
         field_based_calc_result = vmapped_kernel(*inputs)
-        # media merge modular
-        # Return the result instead of side-effect
-        return field_based_calc_result
+
+        return field_based_calc_result, inputs
 
     def get_inputs(self, patterns, emap):
-        # Receive alledge mapping for all params        param_emap = []
         method_params = []
         for p in patterns:
-            # Extract the slice for this specific pattern p=(m, f, p)
-            # p should be a tuple of indices
-            # If p=(m, f, p), param_grid is the [Pos, Feat] array.
-            
             # DEBUG: Handle both int and iterable cases
             if isinstance(p, int):
-                # If p is a single integer, wrap it in a tuple
                 param_grid_map = (p,)
             else:
                 # If p is already iterable (list/tuple), convert to tuple
                 param_grid_map = tuple(p)
             
             param_grid = self.old_g.nodes[param_grid_map]
-            
-            # emap.nodes[tuple(p)] is the [Pos] mask for this field.
-            #mask = emap.nodes[param_grid_map]
-            
-            # Slice it: emap_item is [ActivePos, Feat]
-            #emap_item = param_grid[mask]
-            #param_emap.append(emap_item)
+
             method_params.append(param_grid)
         return method_params
 

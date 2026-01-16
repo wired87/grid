@@ -1,11 +1,16 @@
-
 from typing import Callable, Any, Sequence, List, NamedTuple
 import jax.numpy as jnp
 
+class NodeDataStore(NamedTuple):
+    modules: jnp.ndarray
+
+
+class GnnDataStore(NamedTuple):
+    modules: jnp.ndarray
 
 class Graph(NamedTuple):
     nodes: jnp.ndarray
-    edges: jnp.ndarray
+    #edges: jnp.ndarray
 
     def copy(self) -> "Graph":
         return Graph(self.nodes, self.edges)

@@ -102,68 +102,39 @@ class Node(nnx.Module):
         self.method_id = method_id
         self.mod_idx = mod_idx
 
+        self.projector = nn.Dense(self.embedding_dim, name=str(self.method_id))
+
+
+
     def __call__(
             self,
-            old_g: Graph,  # Use jnp.ndarray for GPU efficiency
-            new_g: Graph,
             gnn_ds,
             time_map
-    ) -> tuple(Graph, jnp.ndarray):
+    ):
         #
-        self.old_g=old_g
-        self.new_g=new_g
         self.gnn_ds = gnn_ds
+        features = []
 
-
-        outputs = [
-            # each entry represents eq step resutl for single field (entire grid)
-        ]
-
-        inputs = [
-            # each entry represents eq step inputs for single field (entire grid)
-        ]
-
-        #calculate new EQ step for all modules fileds
-        for p_idx, patterns in enumerate(
-                self.inp_patterns
-        ):
+        results = []
+        #calculate new EQ step for all modules fields
+        for p_idx, field_pattern in enumerate(self.inp_patterns):
              # patterns here is the nested tuple list for one pattern execution
-             outs, ins = self.process_equation(patterns, time_map)
-             inputs.append(ins)
-             outputs.append(outs)
+             outs, ins = self.process_equation(field_pattern, time_map)
 
-        # transform features
-        features = self.transform_feature(
-            inputs,
-            outputs,
-        )
+             features_t = jnp.concatenate([ins, outs], axis=-1)
+             features.append(features_t)
 
-        for i, feature in enumerate(features):
-            self.gnn_ds[
-                self.mod_idx
-            ][
-                self.method_id
-            ][
-                i
-            ].append(
-                # projections matrices for all ime steps
-                # weights
-                # biases
-                # sloss
-                (
+             # sum calc result for variations for single field eq run
+             result = jnp.sum(outs)
 
-                    feature,
-                )
-            )
+             # apply field result -> db
+             results.append(result)
+        return features, results
 
 
 
 
 
-
-
-
-        return self.new_g, gnn_ds
 
 
 
@@ -276,3 +247,36 @@ class Node(nnx.Module):
             6 * mu_eff
         ) / dx ** 2
         return lap * active
+
+
+
+
+
+    def transform_feature(
+            self,
+            inputs,
+            outputs,
+    ):
+        jax.debug.print("transform_feature...")
+
+        feature_matrix_eq_tstep = []
+        # combine input output for each field -< todo improve with jax
+        for field_in, field_out in zip(inputs, outputs):
+            field_grid_features = []
+
+            for point_in, point_out in zip(field_in, field_out):
+                # Concatenate for persistency: [1, 2, 4, 9]
+                combined = jnp.concatenate([point_in, point_out], axis=-1)
+
+                # Project to GNN hidden state space
+                field_grid_features = nn.Dense(self.embedding_dim)(combined)
+
+            feature_matrix_eq_tstep.append(
+                field_grid_features
+            )
+        jax.debug.print("transform_feature... done")
+        return feature_matrix_eq_tstep
+"""
+
+
+"""

@@ -5,9 +5,10 @@ import jax
 import jax.numpy as jnp
 from flax import linen as nn
 
+from dtypes import TimeMap
+
+
 class DBLayer(nn.Module):
-
-
 
 
     def __init__(self, amount_nodes):
@@ -15,20 +16,26 @@ class DBLayer(nn.Module):
         super().__init__(self)
 
         db_str = os.getenv("DB")
-        db = json.loads(db_str)
+        self.db_pattern = json.loads(db_str)
 
-        self.build_db(amount_nodes, db)
+        self.build_db(amount_nodes, self.db_pattern)
+        self.nodes = None
+        self.old_g = self.nodes
+        self.new_g = self.nodes
 
-        self.old_g = self.nodes.copy()
-        self.new_g = self.nodes.copy()
+        self.model_history = jnp.array([])
 
 
 
     def process_time_step(self):
-        # FILTERED G (Active nodes extraction)
-        time_map = self.extract_active_nodes(
+        # todo FILTERED G (Active nodes extraction)
+        """time_map = self.extract_active_nodes(
             graph=old_g,
-        )
+        )"""
+
+        # todo
+        self.old_g = self.nodes
+        return
 
 
 
@@ -141,10 +148,8 @@ class DBLayer(nn.Module):
                         field_index,
                         field_energy_param_index
                     )
-                ]  # assume energy_grid is jnp array
+                ]
 
-                # find indices where energy != 0
-                #nonzero_indices = jnp.argwhere(energy_grid != 0.0)
                 nonzero_indices = jnp.nonzero(energy_grid != 0)
 
                 pos_map = []

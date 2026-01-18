@@ -1,16 +1,7 @@
 import os
 import json
-from typing import Sequence
-import jax
 import jax.numpy as jnp
-from dtypes import NodeDataStore, TimeMap
-from gnn.calc_layer import CalcLayer
-from gnn.chain import GnnModuleChain
-from gnn.db_layer import DBLayer
 from gnn.gnn import GNN
-from gnn.injector import InjectorLayer
-from mod import Node
-from utils import create_runnable
 
 
 def identity_op(*args):
@@ -28,7 +19,6 @@ class Guard:
         jax.config.update("jax_platform_name", platform)  # must be run before jnp
         self.gpu = jax.devices(platform)[0]
 
-        self.model = self.set_model_skeleton()
 
         # SET PATTERNS
         patterns = os.getenv("PATTERNS")
@@ -39,34 +29,47 @@ class Guard:
         self.amount_nodes = int(os.getenv("AMOUNT_NODES", 10))
         self.time = int(os.getenv("SIM_TIME", 10))  # Default to 10 steps
 
-
         # layers
-        self.inj_layer = InjectorLayer()
-        self.db_layer = DBLayer(self.amount_nodes)
-
-        self.gnn_layer = GnnLayer()
-        self.calc_layer = CalcLayer()
-
-        # PARAMS
-        self.chains: Sequence[
-            GnnModuleChain
-        ] = self.create_modules()
+        self.gnn_layer = GNN()
 
 
+    def prepare(self):
+        pass
 
+
+    def main(self):
+        self.prepare()
+        self.run()
+        self.finish()
+        print("SIMULATION PROCESS FINISHED")
+
+
+    def run(self):
+        # start sim on gpu
+        self.gnn_layer.main()
+        print("run... done")
+
+    def finish(self):
+        # todo upser bq
+        print("DATA DISTRIBUTED")
+        # todo live visualization von user query -> data -> visualize (zero shot prediction)
+
+
+
+
+"""
     def gnn_skeleton(self):
         # SET EMPTY STRUCTURE OF MODEL
         model_skeleton = []
-        for i, module in enumerate(self.updator_pattern):
+        for i, module in enumerate(self.def_out_db):
             model_skeleton[i] = []
 
             for j, method_struct in enumerate(module):
                 model_skeleton[i].append(
-                    [] #
+                    []  #
                 )
                 field_block_matrice = []
                 for adj_entry in method_struct:
-
                     # adj_entry = entry with 2 inputs
                     input_adj = adj_entry[0]
                     return_adj = adj_entry[1]
@@ -92,97 +95,6 @@ class Guard:
 
 
 
-
-
-    def main(self):
-        self.prepare()
-        self.run()
-        self.finish()
-        print("SIMULATION PROCESS FINISHED")
-
-    def prepare(self):
-        # laod env_vars
-        self.nodes = self.build_db(
-            self.amount_nodes,
-            self.db,
-        )
-
-        self.gnn = GNN(
-            amount_nodes=self.amount_nodes,
-            modules_len=len(self.db),
-            updator_pattern=None, # self.updator_pattern,
-            nodes=self.nodes,
-            inj_pattern=self.injection_pattern,
-            glob_time=self.time,
-            chains=self.chains,
-            energy_map=self.energy_map
-        )
-
-        print("PREPARE FINISHED")
-
-
-
-    def run(self):
-        # start sim on gpu
-        self.gnn.main()
-        print("RUN FINISHED")
-
-    def finish(self):
-        # todo upser bq
-        print("DATA DISTRIBUTED")
-
-
-    def simulate(self, steps: int = None):
-        try:
-            if steps is None:
-                steps = self.glob_time
-
-            # Initialize connectivity
-            self.set_shift()
-
-            # History collection
-            self.history = []
-
-            for step in range(steps):
-                jax.debug.print(
-                    "Sim step {s}/{n}",
-                    s=step + 1,
-                    n=steps
-                )
-
-                # apply injections inside db layer
-                self.inj_layer.inject(
-                    step=step,
-                    db_layer=self.db_layer
-                )
-
-                # prepare index map
-                self.db_layer.process_time_step(
-
-                )
-                self.gnn_layer.process_nodes()
-
-                new_g = self.calc_layer.calc_chains()
-
-        except Exception as e:
-            jax.debug.print(f"Err simulate: {e}")
-            raise
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-"""
             for potential_args in chain_struct:
                 if potential_args is None:
                     continue
@@ -256,5 +168,5 @@ class Guard:
                             rngs=rngs
                         )
                     )
-
+    
 """

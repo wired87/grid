@@ -104,16 +104,16 @@ class Node(nnx.Module):
 
     def __call__(
             self,
-            gnn_ds,
-            time_map
+            old_g,
+            field_variation_structs,
     ):
         #
-        self.gnn_ds = gnn_ds
+        self.old_g = old_g
         features = []
 
         results = []
         #calculate new EQ step for all modules fields
-        for p_idx, field_pattern in enumerate(self.inp_patterns):
+        for p_idx, field_pattern in enumerate(field_variation_structs):
              # patterns here is the nested tuple list for one pattern execution
              outs, ins = self.process_equation(field_pattern, time_map)
 
@@ -128,24 +128,18 @@ class Node(nnx.Module):
         return features, results
 
 
+    def upscale_feature_variations(self):
+        # 1. Wir wandeln alles in eine Liste von JAX-Arrays um
+        # Dabei stellen wir sicher, dass alles mindestens 1D ist
+        arrays = [jnp.atleast_1d(jnp.array(x)) for x in field_eq_param_struct]
 
+        # 2. Die Ziel-Länge n bestimmen (entspricht deinem 'len(long)')
+        n = max(arr.shape[0] for arr in arrays)
 
-
-
-
-
-
-
-
-    def send(self):
-        pass
-
-
-
-
-    def receive_features(self):
-        pass
-
+        # 3. Hochskalieren und Stacken
+        # jnp.broadcast_to simuliert die Vervielfältigung, ohne Speicher zu verschwenden
+        res = jnp.stack([jnp.broadcast_to(arr, (n,)) for arr in arrays], axis=-1)
+        return res
 
 
 
@@ -212,7 +206,7 @@ class Node(nnx.Module):
         return field_based_calc_result, inputs
 
     def get_inputs(self, patterns, emap):
-        method_params = []
+        len_params_per_methods = []
         for p in patterns:
             # DEBUG: Handle both int and iterable cases
             if isinstance(p, int):
@@ -223,8 +217,8 @@ class Node(nnx.Module):
             
             param_grid = self.old_g.nodes[param_grid_map]
 
-            method_params.append(param_grid)
-        return method_params
+            len_params_per_methods.append(param_grid)
+        return len_params_per_methods
 
 
 

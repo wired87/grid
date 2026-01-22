@@ -30,6 +30,10 @@ class DBLayer(nn.Module):
 
         self.model_history = jnp.array([])
 
+        method_to_db = os.getenv("method_to_db")
+        self.method_to_db = json.loads(method_to_db)
+
+
 
 
     def process_time_step(self):
@@ -54,24 +58,74 @@ class DBLayer(nn.Module):
             eq_index,
             time,
     ):
-
-
         pass
 
 
-
-
-
-
-
-
-
-
-
-    def build_db(self, amount_nodes, db):
-        # create world
+    def build_db(self, amount_nodes, db, axis):
+        # receive 1d array _> scale each qx 0 for n nodes
         jax.debug.print("build_db...")
-        # todo check instance str -> check if in params -> replace
+        nodes = []
+
+        # scale db nodes
+        for entry, ax in zip(db, axis):
+            if ax == 0:
+                slice = jnp.repeat(
+                    jnp.zeros_like(entry),
+                    amount_nodes
+                )
+                nodes.extend(slice)
+            else:
+                nodes.append(entry)
+
+        # scale nodes down db
+        nodes = jnp.array(nodes)
+        self.nodes = jax.device_put(nodes, self.gpu)
+        jax.debug.print("build_db... done")
+
+
+    def extract_active_nodes(self, graph) -> TimeMap:
+        """
+        Extract energy rich nodes (need for calculation)
+        mark: energy must be present i each field
+        wf:
+        use energy_map -> find energy param index for each field ->
+        identify e != 0 -> create node copy of "active" nodes
+        """
+        nodes=graph.nodes.copy()
+
+        for mindex, module in enumerate(self.energy_map):
+            for field_index, field_energy_param_index in enumerate(module):
+                # field_energy_param_index:int
+
+                # extract grid at path
+                energy_grid = nodes[
+                    tuple(
+                        mindex,
+                        field_index,
+                        field_energy_param_index
+                    )
+                ]
+
+                nonzero_indices = jnp.nonzero(energy_grid != 0)
+
+                pos_map = []
+                for index in nonzero_indices:
+                    pos_map.append(self.schema_grid[index])
+
+                # overwrite nodes with
+                nodes[mindex][field_index] = nonzero_indices
+
+
+        # tod not isolate new g -> jsut bring pattern in eq
+        # return "old_g" with
+        return TimeMap(
+            nodes,
+        )
+
+
+"""
+
+# todo check instance str -> check if in params -> replace
         # 1. Scan dimensions
         max_m = len(db)
         max_f = 0
@@ -152,47 +206,6 @@ class DBLayer(nn.Module):
                 f_idx += 1
             m_idx += 1
 
-        self.nodes = jax.device_put(nodes, self.gpu)
-        jax.debug.print("build_db... done")
-
-
-    def extract_active_nodes(self, graph) -> TimeMap:
-        """
-        Extract energy rich nodes (need for calculation)
-        mark: energy must be present i each field
-        wf:
-        use energy_map -> find energy param index for each field ->
-        identify e != 0 -> create node copy of "active" nodes
-        """
-        nodes=graph.nodes.copy()
-
-        for mindex, module in enumerate(self.energy_map):
-            for field_index, field_energy_param_index in enumerate(module):
-                # field_energy_param_index:int
-
-                # extract grid at path
-                energy_grid = nodes[
-                    tuple(
-                        mindex,
-                        field_index,
-                        field_energy_param_index
-                    )
-                ]
-
-                nonzero_indices = jnp.nonzero(energy_grid != 0)
-
-                pos_map = []
-                for index in nonzero_indices:
-                    pos_map.append(self.schema_grid[index])
-
-                # overwrite nodes with
-                nodes[mindex][field_index] = nonzero_indices
-
-
-        # tod not isolate new g -> jsut bring pattern in eq
-        # return "old_g" with
-        return TimeMap(
-            nodes,
-        )
+"""
 
 

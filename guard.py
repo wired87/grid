@@ -1,5 +1,4 @@
 import os
-import json
 import jax.numpy as jnp
 from gnn.gnn import GNN
 
@@ -12,25 +11,43 @@ def identity_op(*args):
 
 class Guard:
     # todo prevaliate features to avoid double calculations
-    def __init__(self):
+    def __init__(self, config=None):
         #JAX
         import jax
         platform = "cpu" if os.name == "nt" else "gpu"
         jax.config.update("jax_platform_name", platform)  # must be run before jnp
         self.gpu = jax.devices(platform)[0]
 
-
-        # SET PATTERNS
-        patterns = os.getenv("PATTERNS")
-        self.patterns = json.loads(patterns)
-        for key, pattern in self.patterns.items():
-            setattr(self, key.lower(), json.loads(pattern) if pattern else [])
-
         self.amount_nodes = int(os.getenv("AMOUNT_NODES", 10))
         self.time = int(os.getenv("SIM_TIME", 10))  # Default to 10 steps
 
+        # Prepare GNN args from config
+        gnn_kwargs = {}
+        if config:
+            gnn_kwargs['amount_nodes'] = self.amount_nodes
+            gnn_kwargs['nodes_db'] = config.get("DB")
+            gnn_kwargs['inj_pattern'] = config.get("INJECTION_PATTERN")
+            gnn_kwargs['db_out_gnn'] = config.get("DB_OUT_GNN")
+            gnn_kwargs['method_struct'] = config.get("FEATURE_SKELETON")
+            gnn_kwargs['def_out_db'] = config.get("METHOD_OUT_DB")
+            gnn_kwargs['feature_out_gnn'] = config.get("FEATURE_OUT_GNN")
+            gnn_kwargs['feature_schema'] = config.get("FEATURE_SKELETON")
+
+            # attempt to derive modules_len
+            if gnn_kwargs['method_struct']:
+                gnn_kwargs['modules_len'] = len(gnn_kwargs['method_struct'])
+
+        else:
+             gnn_kwargs['amount_nodes'] = self.amount_nodes
+
+        gnn_kwargs["gpu"] = self.gpu
+        gnn_kwargs["time"] = self.time
+        gnn_kwargs["amount_nodes"] = self.amount_nodes
+
         # layers
-        self.gnn_layer = GNN()
+        self.gnn_layer = GNN(#
+            **gnn_kwargs
+        )
 
 
     def prepare(self):

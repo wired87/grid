@@ -3,15 +3,17 @@ import os
 from flax import linen as nn
 import jax.numpy as jnp
 
-
 class InjectorLayer(nn.Module):
 
     # gnn entry -> injects in db
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, injection_pattern=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        injection_pattern = os.getenv("INJECTION_PATTERN")
-        self.injection_pattern = json.loads(injection_pattern)
+        if injection_pattern is None:
+            injection_pattern = os.getenv("INJECTION_PATTERN")
+            self.injection_pattern = json.loads(injection_pattern) if injection_pattern else []
+        else:
+            self.injection_pattern = injection_pattern
 
 
     def inject(self, step, db_layer):

@@ -15,25 +15,35 @@ SHIFT_DIRS = [
 
 DIM = 3
 
+import jax.numpy as jnp
+import jax
+
+LIBS={
+    "jax": jax,
+    "vmap": jax.vmap,
+    "jnp": jnp,
+    "jit": jax.jit,
+}
 
 
-def create_runnable(
-        eq_code,
-        eq_key,
-        xtrn_mods
-):
-    print(f"create_runnable, {eq_key}")
+def create_runnable(eq_code):
     try:
         local_vars = {}
+        exec(eq_code, LIBS, local_vars)
 
-        exec(eq_code, xtrn_mods, local_vars)
+        # Suche alle aufrufbaren Objekte, die NICHT aus den LIBS kommen
+        # und keine internen Python-Attribute (__name__ etc.) sind
+        callables = [
+            v for k, v in local_vars.items()
+            if callable(v) and not k.startswith("__")
+        ]
 
-        # Extract the function (must be defined as def f(...))
-        f = local_vars.get(eq_key)
+        if not callables:
+            raise ValueError("Keine aufrufbare Funktion im eq_code gefunden.")
 
-        if f is None:
-            raise ValueError(f"Function {eq_key} not found in eq_code")
-        return f
+        # Nimm die letzte definierte Funktion
+        return callables[-1]
+
     except Exception as e:
-        print(f"Err create_runnable ({eq_key}):", e)
-
+        print(f"Err create_runnable:", e)
+        raise e

@@ -11,12 +11,17 @@ from dtypes import TimeMap
 class DBLayer(nn.Module):
 
 
-    def __init__(self, amount_nodes):
+    def  __init__(self, amount_nodes, gpu, db_pattern=None):
         # DB Load and parse
-        super().__init__(self)
+        super().__init__()
 
-        db_str = os.getenv("DB")
-        self.db_pattern = json.loads(db_str)
+        if db_pattern is None:
+            db_str = os.getenv("DB")
+            self.db_pattern = json.loads(db_str) if db_str else []
+        else:
+            self.db_pattern = db_pattern
+
+        self.gpu = gpu
 
         self.build_db(amount_nodes, self.db_pattern)
         self.nodes = None
@@ -32,17 +37,41 @@ class DBLayer(nn.Module):
         """time_map = self.extract_active_nodes(
             graph=old_g,
         )"""
+        # add history
+        self.history_db.append(
+            self.new_g
+        )
 
         # todo
         self.old_g = self.nodes
-        return
+
+    def pickup_equation(
+            self,
+            amount_nodes,
+            amount_features,
+            module_index,
+            len_indices,
+            eq_index,
+            time,
+    ):
+
+
+        pass
+
+
+
+
+
+
+
+
 
 
 
     def build_db(self, amount_nodes, db):
         # create world
         jax.debug.print("build_db...")
-
+        # todo check instance str -> check if in params -> replace
         # 1. Scan dimensions
         max_m = len(db)
         max_f = 0

@@ -9,7 +9,6 @@ from flax import nnx
 from jax import vmap
 from typing import Callable, List, Tuple
 
-from gnn.gnn import Graph
 from utils import SHIFT_DIRS, DIM
 
 
@@ -85,8 +84,6 @@ class Node(nnx.Module):
     def __init__(
             self,
             runnable: Callable,
-            inp_edge_map: List,  # method_list[param_map[]]
-            outp_pattern: Tuple, #
             in_axes_def: Tuple, #
             method_id:str, #
             mod_idx:int
@@ -96,14 +93,13 @@ class Node(nnx.Module):
 
         # Static pattern definitions - these should NOT be JAX arrays to allow tuple indexing
         self.runnable = jax.tree_util.Partial(runnable)
-        self.inp_patterns = inp_edge_map
-        self.outp_pattern = outp_pattern
         self.in_axes_def = in_axes_def
         self.method_id = method_id
         self.mod_idx = mod_idx
-
-        self.projector = nn.Dense(self.embedding_dim, name=str(self.method_id))
-
+        self.projector = nn.Dense(
+            self.embedding_dim,
+            name=str(self.method_id)
+        )
 
 
     def __call__(

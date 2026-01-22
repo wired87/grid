@@ -3,7 +3,6 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
 from guard import Guard
 
 def run_gnn_simulation():
@@ -14,11 +13,9 @@ def run_gnn_simulation():
     except FileNotFoundError:
         print("Error: test_out.json not found.")
         return
-    for k, v in data.items():
-        os.environ[k] = v
 
     print("Initializing Guard...")
-    guard = Guard()
+    guard = Guard(config=data)
     
     print("Running Simulation...")
     guard.main()

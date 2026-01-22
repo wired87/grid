@@ -26,7 +26,7 @@ class GnnModuleChain(nnx.Module):
         """
         # Efficiently copy the nodes for the new state (G(t+1))
         self.old_g = old_g
-        self.gnn_ds = gnn_ds
+        #self.gnn_ds = gnn_ds
         self.new_g = new_g
 
         # calc each modules method

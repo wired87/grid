@@ -10,7 +10,7 @@ class InjectorLayer(nn.Module):
     def __init__(self, injection_pattern=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if injection_pattern is None:
-            injection_pattern = os.getenv("INJECTION_PATTERN")
+            injection_pattern = get_context("INJECTION_PATTERN")
             self.injection_pattern = json.loads(injection_pattern) if injection_pattern else []
         else:
             self.injection_pattern = injection_pattern

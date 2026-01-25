@@ -1,5 +1,4 @@
 """
-
 Update rocess
 inject nodes
 identify nodes e > 0
@@ -11,17 +10,12 @@ import os
 from flax import nnx
 
 import jax
-from jax import jit, vmap
+from jax import vmap
 
 from gnn.db_layer import DBLayer
 from gnn.injector import InjectorLayer
 from mod import Node
 from utils import SHIFT_DIRS, create_runnable
-
-try:
-    from safetensors.numpy import save_file as safetensors_save
-except Exception:
-    safetensors_save = None
 
 import jax.numpy as jnp
 
@@ -29,84 +23,26 @@ import jax.numpy as jnp
 class GNN(
     nnx.Module
 ):
-    # todo pattern applieance and converter -< data ar request,
-    # build stabel update loop
-
-    """
-    zeit
-
-    Universal Actor for all fields to process a batch of Fields same type)
-    With a GPU
-
-    Design the system so each method has its own preprocessor (CPU)
-    and processor (GPU)
-
-    receive struct:
-    [
-    soa
-    ],
-
-    [
-    [runnables]
-    [(soa indices for params)]
-    }
-
-    WF:
-    Hold all data on gpu but calc diferentyl
-    pattern must come from cpu
-
-    todo cache results to index
-    """
 
     def __init__(
             self,
-            gpu,
+            INJECTIONS,
             amount_nodes,
+            method_to_db,
             time:int,
-            feature_out_gnn,
-            db_out_gnn,
-            edge_db_to_method_variation_struct,
-            iterator_skeleton,
-            return_key_map,
-            nodes_db=None,
-            inj_pattern:list[int]=None,
-            modules_len=0,
-            gnn_data_struct:list=None,
-            method_struct=None,
-            def_out_db=None,
+            db_to_method,
+            METHODS,
+            AXIS,
+            DB,
+            modules,
+            gpu,
     ):
-        if inj_pattern is not None:
-             self.injection_pattern = inj_pattern
-        else:
-            injection_pattern = os.getenv("INJECTION_PATTERN")
-            self.injection_pattern = json.loads(injection_pattern) if injection_pattern else []
+        self.INJECTIONS = INJECTIONS
+        self.METHODS = METHODS
 
-        self.feature_out_gnn = feature_out_gnn
-
-        self.global_utils = None
-
-        self.gnn_data_struct=gnn_data_struct
-
-        self.db_out_gnn=db_out_gnn
-        self.iterator_skeleton = iterator_skeleton
-
-        self.edge_db_to_method_variation_struct=edge_db_to_method_variation_struct
-        self.len_params_per_method = iterator_skeleton["len_params_per_method"]
-
-
-        self.index = 0
-        self.return_key_map=return_key_map
         self.time = time
-        self.nodes_db = nodes_db
         self.amount_nodes = amount_nodes
-
-        self.world = []
-        self.store = []
-        self.module_map = []
-        self.time=time
-        self.model = []
-
-
+        self.db_to_method = db_to_method
 
         # Generate grid coordinates based on amount_nodes dimensionality
         self.schema_grid = [
@@ -117,39 +53,37 @@ class GNN(
         self.len_params_per_methods = {}
         self.change_store = []
 
-        self.modules_len=modules_len
-        self.inj_pattern = inj_pattern
-
         self.inj_layer = InjectorLayer()
 
-        self.db_layer = DBLayer(self.amount_nodes, gpu)
+        self.gpu = gpu
+
+        self.db_layer = DBLayer(
+            amount_nodes,
+            self.gpu,
+            modules,
+            method_to_db,
+            AXIS,
+            DB,
+        )
 
         # features jsut get etend naturally to the arr
         self.model_skeleton = jnp.array([])
 
-        if method_struct is not None:
-             self.method_struct = method_struct
-        else:
-            method_struct_env = os.getenv("METHOD_LAYER")
-            self.method_struct = json.loads(method_struct_env) if method_struct_env else []
-
-        if def_out_db is not None:
-             self.def_out_db = jnp.array(def_out_db)
-        else:
-            def_out_db_env = os.getenv("METHOD_OUT_DB")
-            self.def_out_db = jnp.array(json.loads(def_out_db_env)) if def_out_db_env else jnp.array([])
-
         print("Node initialized and build successfully")
-
 
 
     def main(self):
         self.build_gnn()
         self.simulate()
-        model = self.build_model()
-        serialized = self.serialize(model)
-        self.serialized_model = serialized
 
+        serialized = self.serialize(self.model_skeleton)
+
+        jax.debug.print(
+            "serialized \n{s}",
+            s=serialized,
+            n=self.time
+        )
+        jax.debug.print("process finished.")
 
     def simulate(self):
         try:
@@ -169,32 +103,22 @@ class GNN(
                 # prepare gs
                 self.db_layer.process_time_step()
 
-                # perform calc step
-                self.process_t_step()
+                # includes actual params ready to calc
+                # todo später: behalte features und patterns in den nodes -> transferier alles am ende in einem mal in X struktur
+
+                # get params from DB layer and init calc
+                self.calc_batch()
 
         except Exception as e:
             jax.debug.print(f"Err simulate: {e}")
             raise
+        jax.debug.print(
+            "t={n}... done",
+            n=self.time
+        )
 
 
-
-    def process_t_step(self):
-        # includes actual params ready to calc
-        # todo später: behalte features und patterns in den nodes -> transferier alles am ende in einem mal in X struktur
-
-        # get params from DB layer and init calc
-        all_results = self.calc_batch()
-
-        # RESULT -> HISTORY DB todo: upsert directly to bq
-        # todo: add param stacks on single eq layer
-        vmap(
-            self.scatter_results_to_db,
-            in_axes=(0, 0)
-        )(all_results, self.db_layer.method_to_db)
-
-
-
-    def build_model(self):
+    def _workflow(self):
         model = [
             # INJECTIOIN -> to get directly inj pattern (todo switch throguh db mapping)
             # DB SCHEMA
@@ -209,18 +133,14 @@ class GNN(
             # FEATURE DB
             self.def_out_db
         ]
+
         return model
 
 
     def calc_batch(self):
         # calc all methods and apply result to new g
-
         all_results = []
-
-        for mod_idx, amount_equations in enumerate(
-                self.iterator_skeleton["modules"]
-        ):
-
+        for mod_idx, amount_equations in enumerate(self.iterator_skeleton["modules"]):
             #
             for eq_idx in range(amount_equations):
                 node:Node = self.get_equation(
@@ -234,24 +154,25 @@ class GNN(
                     eq_idx,
                 )
 
+                #
+                param_kernel = vmap(
+                    self.db_layer.extract_field_param_variation,
+                    in_axes=0
+                )
 
-                params:list[jnp.array] = self.get_param_items()
+                # get params for all variaotions
+                params = param_kernel(variations)
 
                 # calc single equation
                 features, results = node(
                     self.db_layer.old_g,
-                    param_struct,
+                    params,
                 )
 
                 # append all features to final struct
-                self.model_skeleton = jnp.concatenate(
-                    [
-                        self.model_skeleton,
-                        features.reshape(-1)
-                    ]
-                )
+                jnp.stack([self.model_skeleton, features])
 
-        return all_results
+        self.db_layer.sort_results(all_results)
 
 
 
@@ -264,30 +185,6 @@ class GNN(
         self.model_skeleton.at[
             tuple(indices.T)
         ].add(all_features)
-
-
-
-
-        """
-            def gnn_skeleton(self, feature_schema):
-        # feature
-        jax.debug.print("gnn_skeleton...")
-
-        # SET EMPTY STRUCTURE OF MODEL
-        model_skeleton = jnp.array([
-            jnp.array([])
-            for _ in range(
-                jnp.sum(self.iterator_skeleton["eq_variations"]))
-        ])
-
-        jax.debug.print("gnn_skeleton... done")
-        return model_skeleton
-        """
-
-
-
-
-    def extract_field_variations(self, mod_idx, eq_idx):
 
 
 
@@ -306,8 +203,6 @@ class GNN(
         # get eq len
         variation_len = self.iterator_skeleton["fields"][mod_idx]
 
-
-
         variation_end = variation_start + variation_len
 
         # get variation block
@@ -316,69 +211,6 @@ class GNN(
 
 
 
-
-
-
-
-        # 1. Bestimme den Startpunkt im db_params Mapping für dieses Modul/Eq
-        # Wir nutzen die Metadaten aus dem iterator_skeleton
-        num_eqs_before = sum(self.iterator_skeleton["modules"][:mod_idx])
-        global_eq_idx = num_eqs_before + eq_idx
-
-        # Offsets berechnen: Wo liegen die Indizes für diese Gleichung im db_params?
-        # (Annahme: db_params ist flach gespeichert: [Eq1_Field1_Vars, Eq1_Field2_Vars, ...])
-        num_fields = iterator_skeleton["fields"][mod_idx]
-
-        # Wir loopen über die Felder dieses Moduls
-        all_field_results = []
-
-        for f_idx in range(num_fields):
-            # Index für field_variations finden
-            # (Jedes Feld hat eine eigene Anzahl an Variationen)
-            var_count_idx = (sum(iterator_skeleton["fields"][:mod_idx]) * num_eqs_before) + (
-                        f_idx * num_eqs_before) + eq_idx
-            num_vars = iterator_skeleton["field_variations"][var_count_idx]
-            params_per_eq = iterator_skeleton["method_param"][global_eq_idx]
-
-            # 2. Extrahiere die db_indices für alle Variationen dieses Feldes
-            # Wir berechnen den Slice im flachen iterator_skeleton["db_params"]
-            start_mapping = sum(iterator_skeleton["field_variations"][:var_count_idx]) * params_per_eq
-            end_mapping = start_mapping + (num_vars * params_per_eq)
-
-            # Das sind die "Zettel" mit den Adressen im flat_db
-            mapping_indices = jnp.array(iterator_skeleton["db_params"][start_mapping:end_mapping]).reshape(
-                (num_vars, params_per_eq))
-
-            # 3. Innere Funktion für die Extraktion (wird per vmap über Variationen ausgeführt)
-            def process_variation(var_indices):
-                variation_data = []
-                for db_idx in var_indices:
-                    # Prüfe die Achse im flachen AXIS-Buffer
-                    axis_val = flat_axis[db_idx]
-
-                    # Bedingung: axis == 0 -> Gesamten Node-Block extrahieren
-                    # JAX-konforme Umsetzung der if-Logik via select oder dynamic_slice
-                    def get_node_block():
-                        return jax.lax.dynamic_slice_in_dim(flat_db, db_idx, amount_nodes)
-
-                    def get_single_val():
-                        # Falls axis != 0, nimm nur den einen Wert und padde ihn (oder broadcast)
-                        val = flat_db[db_idx]
-                        return jnp.broadcast_to(val, (amount_nodes,))
-
-                    # Die GPU entscheidet hier maskiert, welcher Pfad genommen wird
-                    node_param_vector = jax.lax.cond(axis_val == 0, get_node_block, get_single_val)
-                    variation_data.append(node_param_vector)
-
-                return jnp.stack(variation_data)  # Form: (Params_pro_Eq, Amount_Nodes)
-
-            # 4. Vektorisierte Ausführung über alle Variationen des Feldes
-            # Das macht die 100.000 Nodes und n-Variationen extrem schnell
-            extracted_vars = jax.vmap(process_variation)(mapping_indices)
-            all_field_results.append(extracted_vars)
-
-        jax.debug.print("✅ Variations extracted.")
-        return all_field_results
 
 
 
@@ -422,54 +254,6 @@ class GNN(
                 )
                 # replace mehod str with py class
                 self.method_struct[def_idx] = node
-
-
-
-    @jit
-    def scatter_results_to_db(self, results, db_start_idx):
-        """
-        Schreibt Berechnungs-Resultate zurück in den flachen DB-Buffer.
-
-        flat_db: Der aktuelle 1D Parameter-Buffer.
-        flat_axis: Der 1D Buffer mit den Achsen-Definitionen (0 oder None).
-        results: Das JNP-Array der neuen Werte (Länge: 1 oder amount_nodes).
-        db_start_idx: Der Start-Index im flat_db, wo die Ersetzung beginnt.
-        amount_nodes: Die Anzahl der räumlichen Knoten.
-        """
-
-        # 1. Bestimme die Achsen-Regel am Startpunkt
-        axis_rule = self.db_layer.axis[db_start_idx]
-
-        def update_field_block(db, res):
-            # Fall: axis == 0 -> Wir ersetzen einen Block der Länge n
-            # Wir nutzen dynamic_update_slice für maximale GPU-Performance
-            return jax.lax.dynamic_update_slice_in_dim(
-                db,
-                res.reshape(-1),  # Sicherstellen, dass es 1D ist
-                db_start_idx,
-                axis=0
-            )
-
-        def update_single_value(db, res):
-            # Fall: axis == None -> Wir ersetzen nur einen einzelnen Wert
-            # Falls das Resultat ein Vektor ist (z.B. durch Reduktion), nehmen wir den Durchschnitt
-            # oder das erste Element, je nach physikalischer Logik.
-            val = res[0] if res.ndim > 0 else res
-            return db.at[db_start_idx].set(val)
-
-        # 2. Bedingte Ausführung auf der GPU
-        # jax.lax.cond vermeidet Python-Side-Effects und läuft komplett auf dem Core
-        self.db_layer.new_g = jax.lax.cond(
-            axis_rule == 0,
-            update_field_block,
-            update_single_value,
-            self.db_layer.new_g,
-            results
-        )
-
-
-
-
 
 
     def serialize(self, data):

@@ -145,19 +145,6 @@ class Node(nnx.Module):
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
     def transform_feature(
             self,
             inputs,
@@ -266,7 +253,3 @@ class Node(nnx.Module):
             )
         jax.debug.print("transform_feature... done")
         return feature_matrix_eq_tstep
-"""
-
-
-"""

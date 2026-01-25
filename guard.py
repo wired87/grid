@@ -1,5 +1,8 @@
+import json
 import os
 import jax.numpy as jnp
+
+from data_handler.main import load_data
 from gnn.gnn import GNN
 
 
@@ -9,56 +12,51 @@ def identity_op(*args):
     return args[0] if args else jnp.array([0.0])
 
 
+DB_CONTROLLER = "DB_CONTROLLER"
+MODEL_CONTROLLER = "MODEL_CONTROLLER"
+
 class Guard:
     # todo prevaliate features to avoid double calculations
-    def __init__(self, config=None):
+    def __init__(self):
         #JAX
         import jax
         platform = "cpu" if os.name == "nt" else "gpu"
         jax.config.update("jax_platform_name", platform)  # must be run before jnp
         self.gpu = jax.devices(platform)[0]
 
-        self.amount_nodes = int(os.getenv("AMOUNT_NODES", 10))
-        self.time = int(os.getenv("SIM_TIME", 10))  # Default to 10 steps
+        # LOAD DAT FROM BQ OR LOCAL
+        self.cfg = load_data()
 
-        # Prepare GNN args from config
-        gnn_kwargs = {}
-        if config:
-            gnn_kwargs['amount_nodes'] = self.amount_nodes
-            gnn_kwargs['nodes_db'] = config.get("DB")
-            gnn_kwargs['inj_pattern'] = config.get("INJECTION_PATTERN")
-            gnn_kwargs['db_out_gnn'] = config.get("DB_OUT_GNN")
-            gnn_kwargs['method_struct'] = config.get("FEATURE_SKELETON")
-            gnn_kwargs['def_out_db'] = config.get("METHOD_OUT_DB")
-            gnn_kwargs['feature_out_gnn'] = config.get("FEATURE_OUT_GNN")
-            gnn_kwargs['feature_schema'] = config.get("FEATURE_SKELETON")
+        AMOUNT_NODES = int(os.getenv("AMOUNT_NODES", 10))
+        SIM_TIME = int(os.getenv("SIM_TIME"))  # Default to 10 steps
 
-            # attempt to derive modules_len
-            if gnn_kwargs['method_struct']:
-                gnn_kwargs['modules_len'] = len(gnn_kwargs['method_struct'])
-
-        else:
-             gnn_kwargs['amount_nodes'] = self.amount_nodes
-
-        gnn_kwargs["gpu"] = self.gpu
-        gnn_kwargs["time"] = self.time
-        gnn_kwargs["amount_nodes"] = self.amount_nodes
+        for k,v in self.cfg.items():
+            setattr(self, k, json.loads(v))
 
         # layers
-        self.gnn_layer = GNN(#
-            **gnn_kwargs
+        self.gnn_layer = GNN(
+            INJECTIONS,
+            amount_nodes,
+            method_to_db,
+            time=SIM_TIME,
+            db_to_method,
+            METHODS,
+            AXIS,
+            DB,
+            modules,
+            gpu,
         )
 
 
-    def prepare(self):
-        pass
+
+
 
 
     def main(self):
-        self.prepare()
         self.run()
-        self.finish()
+        results = self.finish()
         print("SIMULATION PROCESS FINISHED")
+        return results
 
 
     def run(self):
@@ -67,123 +65,36 @@ class Guard:
         print("run... done")
 
     def finish(self):
-        # todo upser bq
+        # Collect data
+        history_nodes = self.gnn_layer.db_layer.history_nodes
+        model_skeleton = self.gnn_layer.model_skeleton
+        
+        # Serialization helper
+        def serialize(data):
+            if isinstance(data, list):
+                return [serialize(x) for x in data]
+            if isinstance(data, tuple):
+                return tuple(serialize(x) for x in data)
+            if isinstance(data, dict):
+                 return {k: serialize(v) for k, v in data.items()}
+            
+            # Check for JAX/Numpy array
+            if hasattr(data, 'dtype') and hasattr(data, 'real') and hasattr(data, 'imag'):
+                # Check directly if complex dtype
+                if jnp.iscomplexobj(data):
+                    return (data.real, data.imag)
+            return data
+
+        serialized_history = serialize(history_nodes)
+        serialized_model = serialize(model_skeleton)
+
+        # Construct result dictionary
+        result = {
+            DB_CONTROLLER: serialized_history,
+            MODEL_CONTROLLER: serialized_model
+        }
+        
         print("DATA DISTRIBUTED")
-        # todo live visualization von user query -> data -> visualize (zero shot prediction)
+        return result
 
 
-
-
-"""
-    def gnn_skeleton(self):
-        # SET EMPTY STRUCTURE OF MODEL
-        model_skeleton = []
-        for i, module in enumerate(self.def_out_db):
-            model_skeleton[i] = []
-
-            for j, method_struct in enumerate(module):
-                model_skeleton[i].append(
-                    []  #
-                )
-                field_block_matrice = []
-                for adj_entry in method_struct:
-                    # adj_entry = entry with 2 inputs
-                    input_adj = adj_entry[0]
-                    return_adj = adj_entry[1]
-
-                    # merge in/out adj
-                    adj_mtx = [*[input_adj], return_adj]
-
-                    feature_complex = []
-
-                    # store
-                    feature_store = [feature_complex, adj_mtx]
-
-                    # add field blcok struct
-                    field_block_matrice.append(
-                        feature_store
-                    )
-
-                # ADD FIELD BLOCK STRUCT TO MODEL
-                model_skeleton[i][j].append(
-                    field_block_matrice
-                )
-        return model_skeleton
-
-
-
-            for potential_args in chain_struct:
-                if potential_args is None:
-                    continue
-                # Handle potential extra nesting level (e.g. [[arg, ...], [arg, ...]])
-                # flattening it into the chain sequence
-                
-                # Normalize to a list of args_list
-                if isinstance(potential_args, list) and len(potential_args) > 0 and isinstance(potential_args[0], list):
-                    methods_list = potential_args
-                else:
-                    methods_list = [potential_args]
-
-                for args in methods_list:
-                    # Sanitize args from DEMO_INPUT format
-                    # args is [desc, inp, outp, in_axes, method_id] (5 items)
-                    sanitized_args = list(args)
-
-                    # Ensure minimal length
-                    while len(sanitized_args) < 5:
-                        sanitized_args.append(None)
-                    
-                    # 1. Runnable (replace string with identity)
-                    if isinstance(sanitized_args[0], str):
-                        sanitized_args[0] = identity_op
-                    
-                    # 2. In-Axes / Pattern detection
-                    # Correct argument mapping if JSON has patterns at index 3 or 4 but Node expects them at index 1 and 2
-                    
-                    # Check for Input Pattern at Index 3 (Common case in this JSON)
-                    if len(sanitized_args) > 3 and isinstance(sanitized_args[3], list) and (len(sanitized_args[3]) > 0 and isinstance(sanitized_args[3][0], list)):
-                        # If index 1 is not a list (e.g. 0), move it there
-                        if not isinstance(sanitized_args[1], list):
-                            sanitized_args[1] = sanitized_args[3]
-                            sanitized_args[3] = 0 # Reset in_axes to 0
-                    
-                    # Check for Output Pattern (or secondary pattern) at Index 4
-                    if len(sanitized_args) > 4 and isinstance(sanitized_args[4], list):
-                        # If index 2 (outp_pattern) is None/0/not list, move it there
-                        if not isinstance(sanitized_args[2], tuple): # outp_pattern is Tuple
-                             # But here we assume the list from JSON is what we want.
-                             # If arg 2 is None or 0.
-                             if sanitized_args[2] is None or sanitized_args[2] == 0:
-                                sanitized_args[2] = tuple(sanitized_args[4]) # Convert to tuple? Or keep list if Node handles it?
-                                # Node expects Tuple for outp_pattern.
-                                # But let's just move it.
-                                sanitized_args[2] = sanitized_args[4]
-                                # Clean up index 4 (method_id)
-                                sanitized_args[4] = "generated_method_id"
-                        elif not isinstance(sanitized_args[1], list):
-                             # Fallback: if input pattern was NOT found at 3, maybe it's at 4?
-                             sanitized_args[1] = sanitized_args[4]
-                             sanitized_args[4] = "generated_method_id"
-
-                    # Check inputs again
-
-
-                    # Fallback for index 3 if it is a list of strings (axes) -> replace with 0 for safety
-                    if len(sanitized_args) > 3 and isinstance(sanitized_args[3], list) and not isinstance(sanitized_args[3][0], list):
-                         sanitized_args[3] = 0
-
-                    # 3. Method ID (ensure str)
-                    sanitized_args[4] = str(sanitized_args[4])
-                    
-                    # Check length to avoid RNG collision
-                    if len(sanitized_args) > 5:
-                        sanitized_args = sanitized_args[:5]
-
-                    chain_nodes.append(
-                        Node(
-                            *sanitized_args,
-                            rngs=rngs
-                        )
-                    )
-    
-"""

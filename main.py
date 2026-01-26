@@ -1,7 +1,3 @@
-import jax
-
-from guard import Guard
-
 
 
 def set_shift(start_pos, shift_dirs, schema_grid):
@@ -30,11 +26,7 @@ def deploy_guard():
     return ref
 
 
-def main():
-    print(f"Initializing Simulation with JAX backend: {jax.devices()[0]}")
-    # todo demo data structures
-    GUARD = deploy_guard()
-
-
 if __name__ == "__main__":
-    pass
+    from guard import Guard
+    guard = Guard()
+    guard.main()

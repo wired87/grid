@@ -84,7 +84,6 @@ class Node(nnx.Module):
     def __init__(
             self,
             runnable: Callable,
-            in_axes_def: Tuple, #
             method_id:str, #
             mod_idx:int
     ):
@@ -93,7 +92,6 @@ class Node(nnx.Module):
 
         # Static pattern definitions - these should NOT be JAX arrays to allow tuple indexing
         self.runnable = jax.tree_util.Partial(runnable)
-        self.in_axes_def = in_axes_def
         self.method_id = method_id
         self.mod_idx = mod_idx
         self.projector = nn.Dense(
@@ -106,16 +104,22 @@ class Node(nnx.Module):
             self,
             old_g,
             field_variation_structs,
+            in_axes_def,
     ):
         #
         self.old_g = old_g
         features = []
-
         results = []
         #calculate new EQ step for all modules fields
-        for p_idx, field_pattern in enumerate(field_variation_structs):
+
+        for p_idx, (field_pattern, in_axes_def) in enumerate(
+                zip(field_variation_structs, in_axes_def)
+        ):
              # patterns here is the nested tuple list for one pattern execution
-             outs, ins = self.process_equation(field_pattern, time_map)
+             outs, ins = self.process_equation(
+                 in_axes_def,
+                 field_pattern,
+             )
 
              features_t = jnp.concatenate([ins, outs], axis=-1)
              features.append(features_t)
@@ -126,23 +130,6 @@ class Node(nnx.Module):
              # apply field result -> db
              results.append(result)
         return features, results
-
-
-    def upscale_feature_variations(self):
-        # 1. Wir wandeln alles in eine Liste von JAX-Arrays um
-        # Dabei stellen wir sicher, dass alles mindestens 1D ist
-        arrays = [jnp.atleast_1d(jnp.array(x)) for x in field_eq_param_struct]
-
-        # 2. Die Ziel-Länge n bestimmen (entspricht deinem 'len(long)')
-        n = max(arr.shape[0] for arr in arrays)
-
-        # 3. Hochskalieren und Stacken
-        # jnp.broadcast_to simuliert die Vervielfältigung, ohne Speicher zu verschwenden
-        res = jnp.stack([jnp.broadcast_to(arr, (n,)) for arr in arrays], axis=-1)
-        return res
-
-
-
 
 
     def transform_feature(
@@ -171,25 +158,18 @@ class Node(nnx.Module):
         return feature_matrix_eq_tstep
 
 
-
-
-
     def process_equation(
             self,
-            patterns,
-            time_map,
+            inputs,
+            in_axes_def,
     ):
         # Debug: check what we're working with
-        inputs = self.get_inputs(patterns, time_map)
-
-        
         vmapped_kernel = vmap(
             self.runnable,
-            in_axes=self.in_axes_def,
+            in_axes=in_axes_def,
         )
 
         field_based_calc_result = vmapped_kernel(*inputs)
-
         return field_based_calc_result, inputs
 
     def get_inputs(self, patterns, emap):

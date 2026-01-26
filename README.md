@@ -6,17 +6,13 @@ A high-performance, JAX/Flax-based simulation framework for modeling complex fie
 
 The engine follows a strict **Inject → Filter → Compute → Shift** cycle for each time step.
 
-```mermaid
-graph TD
-    Start --> Loop{Time Loop}
-    subgraph "Simulation Step (Dt)"
-        Loop --> Copy[Copy State]
-        Copy --> Inject[Inject Stimuli] --> Filter[Filter Active Nodes]
-        Filter --> Chains[Run GNN Chains (JAX/GPU)]
-        Chains --> Shift[Shift & Propagate]
-    end
-    Shift --> Rotate[Rotate Graphs] --> Loop
-```
+
+
+## 🛠️ ToDos
+* create a field layer which inlcudes its own specific db (entire grid) (pros: targeted changes can be written without 
+touching/changing everything (jax array are immuatbale so when chngine jst 1 energy val, th entire grid needs to 
+be replaced.)) 
+
 
 ## 🛠️ Key Components
 

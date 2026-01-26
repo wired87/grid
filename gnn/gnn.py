@@ -1,17 +1,9 @@
-"""
-Update rocess
-inject nodes
-identify nodes e > 0
-create G copy
-"""
-import json
+
 import os
 
-from flax import nnx
-
 import jax
-from jax import vmap
-
+from jax import vmap, jit
+# todo _BYTE binary_view = ' '.join(format(b, '08b') for b in text.encode('utf-8'))
 from gnn.db_layer import DBLayer
 from gnn.injector import InjectorLayer
 from mod import Node
@@ -20,29 +12,27 @@ from utils import SHIFT_DIRS, create_runnable
 import jax.numpy as jnp
 
 
-class GNN(
-    nnx.Module
-):
+class GNN:
 
     def __init__(
             self,
             INJECTIONS,
             amount_nodes,
-            method_to_db,
             time:int,
-            db_to_method,
             METHODS,
-            AXIS,
             DB,
-            modules,
+            ITERATORS,
             gpu,
+            method_to_db,
+            db_to_method,
+            DIMS,
     ):
         self.INJECTIONS = INJECTIONS
         self.METHODS = METHODS
-
+        self.ITERATORS = ITERATORS
+        self.DIMS=DIMS
         self.time = time
         self.amount_nodes = amount_nodes
-        self.db_to_method = db_to_method
 
         # Generate grid coordinates based on amount_nodes dimensionality
         self.schema_grid = [
@@ -50,25 +40,33 @@ class GNN(
             for i in range(amount_nodes)
         ]
 
+        self.db_to_method = db_to_method
         self.len_params_per_methods = {}
         self.change_store = []
-
-        self.inj_layer = InjectorLayer()
 
         self.gpu = gpu
 
         self.db_layer = DBLayer(
             amount_nodes,
             self.gpu,
-            modules,
+            ITERATORS["modules"],
             method_to_db,
-            AXIS,
-            DB,
+            db_to_method,
+            **DB,
+            DIMS=int(os.environ.get("DIMS")),
+            fields=ITERATORS["fields"],
+        )
+
+        self.injector = InjectorLayer(
+            **INJECTIONS,
+            db_layer=self.db_layer,#
+            DIMS=self.DIMS,
+            amount_nodes=amount_nodes
+
         )
 
         # features jsut get etend naturally to the arr
         self.model_skeleton = jnp.array([])
-
         print("Node initialized and build successfully")
 
 
@@ -83,6 +81,7 @@ class GNN(
             s=serialized,
             n=self.time
         )
+
         jax.debug.print("process finished.")
 
     def simulate(self):
@@ -95,16 +94,10 @@ class GNN(
                 )
 
                 # apply injections inside db layer
-                self.inj_layer.inject(
+                self.injector.inject_process(
                     step=step,
                     db_layer=self.db_layer
                 )
-                
-                # prepare gs
-                self.db_layer.process_time_step()
-
-                # includes actual params ready to calc
-                # todo später: behalte features und patterns in den nodes -> transferier alles am ende in einem mal in X struktur
 
                 # get params from DB layer and init calc
                 self.calc_batch()
@@ -116,6 +109,44 @@ class GNN(
             "t={n}... done",
             n=self.time
         )
+
+
+
+    @jit
+    def inject(self, step, db_layer):
+        """
+        Applies injections based on self.inj_pattern and current step.
+        Supports the SOA structure: [module, field, param, node_index, schedule]
+        where schedule is list of [time, value].
+        """
+        all_indices = []
+        all_values = []
+
+        for item in self.injection_pattern:
+            if isinstance(item, list) and len(item) == 5 and isinstance(item[4], list):
+                # SOA structure: [mod, field, param, node_idx, schedule]
+                mod_idx, field_idx, param_idx, node_idx, schedule = item
+
+                # Check schedule for current time
+                for time_point, value in schedule:
+                    if time_point == step:
+                        # Add to update list
+                        # Assuming feature index 0
+                        all_indices.append([mod_idx, field_idx, param_idx, node_idx])# rm 0?
+                        all_values.append(value)
+
+        if not all_indices:
+            return
+
+        all_indices = jnp.array(all_indices)  # shape [N, 5]
+        all_values = jnp.array(all_values)  # shape [N]
+
+        # inject step
+        db_layer.nodes.at[
+            tuple(all_indices.T)
+        ].add(all_values)
+
+
 
 
     def _workflow(self):
@@ -138,15 +169,18 @@ class GNN(
 
 
     def calc_batch(self):
+        jax.debug.print("calc_batch...")
         # calc all methods and apply result to new g
         all_results = []
-        for mod_idx, amount_equations in enumerate(self.iterator_skeleton["modules"]):
-            #
+        for mod_idx, amount_equations in enumerate(
+                self.ITERATORS["modules"]):
+            # START LOOP
             for eq_idx in range(amount_equations):
-                node:Node = self.get_equation(
+                node_idx = self.get_equation(
                     mod_idx=mod_idx,
                     eq_idx=eq_idx,
                 )
+                node:Node = self.METHODS[node_idx]
 
                 # extract values
                 variations = self.extract_field_variations(
@@ -154,31 +188,29 @@ class GNN(
                     eq_idx,
                 )
 
-                #
+                # get params for all variations
                 param_kernel = vmap(
                     self.db_layer.extract_field_param_variation,
                     in_axes=0
                 )
-
-                # get params for all variaotions
-                params = param_kernel(variations)
+                params, axis_def = param_kernel(variations)
 
                 # calc single equation
                 features, results = node(
                     self.db_layer.old_g,
                     params,
+                    axis_def,
                 )
 
                 # append all features to final struct
                 jnp.stack([self.model_skeleton, features])
-
         self.db_layer.sort_results(all_results)
-
+        jax.debug.print("calc_batch... done")
 
 
     def sort_features(self, eq_idx, all_features):
-        len_eq_variations = self.iterator_skeleton["eq_variations"][eq_idx]
-        start_idx = jnp.sum(self.iterator_skeleton["eq_variations"])[:eq_idx]
+        len_eq_variations = self.ITERATORS["eq_variations"][eq_idx]
+        start_idx = jnp.sum(self.ITERATORS["eq_variations"])[:eq_idx]
 
         indices = jnp.array(start_idx+i for i in range(len_eq_variations))
         # FEATURE -> MODEL
@@ -198,62 +230,49 @@ class GNN(
         jax.debug.print("📊 Extracting Variations for Mod {m} Eq {e}", m=mod_idx, e=eq_idx)
 
         # sum amount equations till current + all their fields
-        variation_start = sum(self.iterator_skeleton["fields"][:mod_idx]) + sum(self.iterator_skeleton["module"][:mod_idx])
+        variation_start = sum(self.ITERATORS["fields"][:mod_idx]) + sum(self.iterator_skeleton["module"][:mod_idx])
 
         # get eq len
-        variation_len = self.iterator_skeleton["fields"][mod_idx]
+        variation_len = self.ITERATORS["fields"][mod_idx]
 
         variation_end = variation_start + variation_len
 
         # get variation block
-        variations = self.edge_db_to_method_variation_struct[variation_start:variation_end]
+        variations = self.db_to_method[variation_start:variation_end]
         return variations
-
-
-
-
-
 
 
 
     def get_equation(self, mod_idx, eq_idx):
         # retirn index from methdod sruct to gather either Node or str eq
-        def_idx = jnp.sum(self.iterator_skeleton["modules"][mod_idx:]) + eq_idx
-        return def_idx
+        def_idx = jnp.sum(
+            jnp.array(self.ITERATORS["modules"][:mod_idx])
+        ) + eq_idx
+        return int(def_idx)
 
-
-    def get_methods_axis_def(self, mod_idx):
-        """
-        module eq list -> sum till current ->
-        """
-        # Start ist die Summe der Elemente vor dem Index
-        start = jnp.sum(self.iterator_skeleton["modules"][mod_idx:])
-
-        # Ende ist die Summe der Elemente bis einschließlich des Index
-        end = start + self.iterator_skeleton["modules"][mod_idx+1]
-
-        return self.iterator_skeleton["def_axis"][start:end]
 
 
 
     def build_gnn(self):
         for mod_idx, amount_equations in enumerate(
-                self.iterator_skeleton["modules"]):
-
+                self.ITERATORS["modules"]
+        ):
+            #
             for eq_idx in range(amount_equations):
-                def_idx = self.get_equation(mod_idx, eq_idx)
-                eq_axis_def = self.get_methods_axis_def(mod_idx)
+                #
+                def_idx = self.get_equation(
+                    mod_idx, eq_idx)
 
                 node = Node(
                     runnable=create_runnable(
-                        eq_code=self.method_struct[def_idx],
+                        eq_code=self.METHODS[def_idx],
                     ),
-                    in_axes_def=eq_axis_def,
                     method_id=eq_idx,
                     mod_idx=mod_idx,
                 )
+
                 # replace mehod str with py class
-                self.method_struct[def_idx] = node
+                self.METHODS[def_idx] = node
 
 
     def serialize(self, data):
@@ -316,135 +335,4 @@ class GNN(
         jax.debug.print("set direct interactions finsihed")
         return sender, receiver
 
-"""
 
-
-    def get_params(self, mod_idx, eq_idx):
-
-        eq_start_idx = sum(self.iterator_skeleton["modules"][:mod_idx])
-        eq_end_idx = eq_start_idx + self.iterator_skeleton["modules"][mod_idx]
-
-        # 2. Bestimme den Parameter-Bereich im flachen Array (flat_params)
-        # Dazu summieren wir die 'len_params_per_method' Werte (Anzahl Parameter pro Gleichung)
-        # Start-Punkt: Summe aller Parameter-Anzahlen vor dem ersten Index dieses Moduls
-        param_start_offset = sum(self.len_params_per_method[:eq_start_idx])
-
-        # End-Punkt: Start-Punkt + Summe der Parameter-Anzahlen innerhalb dieses Moduls
-        params_in_module = sum(self.len_params_per_method[eq_start_idx:eq_end_idx])
-        param_end_offset = param_start_offset + params_in_module
-
-        # 3. Extraktion params
-        module_slice = flat_params[param_start_offset:param_end_offset]
-
-
-
-    def sort_features_to_fields(self, mod_idx, flat_equation_results):
-       
-        Sortiert die flachen Ergebnisse einer Gleichungs-Berechnung
-        zurück in die field_variations Struktur.
-
-        flat_equation_results: jnp.array (1D) - Alle berechneten Werte eines Moduls
-        mod_idx: int - Welches Modul wurde berechnet
-        
-        jax.debug.print("Sorting results for mod {m}...", m=mod_idx)
-
-        # Wie viele Gleichungen hat dieses Modul?
-        num_eqs = self.iterator_skeleton["modules"][mod_idx]
-
-        # Wie viele Felder hängen an diesem Modul?
-        num_fields = self.iterator_skeleton["fields"][mod_idx]
-
-        # Start- und End-Index im globalen field_variations Skeleton finden
-        eq_start_glob = sum(self.iterator_skeleton["modules"][:mod_idx])
-        # Die Anzahl der Einträge in field_variations pro Modul ist: num_eqs * num_fields
-        var_start_idx = sum(self.iterator_skeleton["modules"][:mod_idx]) * num_fields
-        var_end_idx = var_start_idx + (num_eqs * num_fields)
-
-        # Das sind die Längen jeder Variationseinheit
-        variation_lengths = jnp.array(self.iterator_skeleton["field_variations"][var_start_idx:var_end_idx])
-
-        # Wir brauchen die exakten Stellen, an denen das 1D Array zerschnitten wird
-        split_indices = jnp.cumsum(variation_lengths)[:-1]
-
-        # Dies zerlegt das 1D Array in eine Liste von jnp.arrays
-        sorted_fields = jnp.split(flat_equation_results, split_indices)
-
-        structured_res = [
-            sorted_fields[i * num_fields: (i + 1) * num_fields]
-            for i in range(num_eqs)
-        ]
-
-        jax.debug.print("Sorting done. Created {e} equations with {f} fields each.",
-                        e=len(structured_res), f=num_fields)
-
-        return structured_res
-
-
-   def grab_db_to_method(self, mod_idx, eq_idx):
-        # return list[field[interactions_fro_equation]]
-        jax.debug.print("grab_db_to_method...")
-
-        # 1. Anzahl der Felder (muss statisch oder über self.def_out_db bekannt sein)
-        len_fields = len(self.db_out_gnn[mod_idx])
-
-        raw_indices = [
-            self.db_out_gnn[mod_idx][i][eq_idx]
-            for i in range(len(self.db_out_gnn[mod_idx]))
-        ]
-
-        for i in raw_indices:
-            print("i", i)
-
-        # 2. Umwandlung in ein JAX-Array, damit .T funktioniert
-        # Form: (Anzahl_Felder, Dimensionen_der_Nodes)
-        indice_map = [
-            jnp.array(_indices)
-            for _indices in raw_indices
-        ]
-
-        product = []
-        # RESULTS
-        for _indice in indice_map:
-            params = self.db_layer.nodes.at[
-                tuple(_indice.T)
-            ].get()
-            product.append(params)
-
-        print("grab_db_to_method... done", len(product))
-        return product
-
-
-
-
-
-
-    def db_to_method(self, mod_idx, eq_idx, old_g):
-        jax.debug.print("db_to_method für Modul {m}, Eq {e}...", m=mod_idx, e=eq_idx)
-
-
-        # 1. Bestimme den globalen Index der Gleichung
-        # Summe der Gleichungen aller vorherigen Module + aktueller lokaler eq_idx
-        global_eq_idx = jnp.sum(
-            jnp.array(
-                self.iterator_skeleton["modules"][:mod_idx]
-            )
-        ) + eq_idx
-
-        # get start from
-        start_offset = jnp.sum(
-            jnp.array(self.len_params_per_method[:global_eq_idx])
-        )
-
-        # get len params fro eq
-        param_len = self.len_params_per_method[global_eq_idx]
-
-        # 4. Extraktion via Dynamic Slice (GPU optimiert)
-        # Wir nutzen dynamic_slice, um innerhalb von JIT stabil zu bleiben
-        params = jax.lax.dynamic_slice_in_dim(old_g, start_offset, param_len)
-
-        jax.debug.print("db_to_method... done. Extrahierte {l} Parameter", l=param_len)
-        return params, (start_offset, start_offset + param_len)
-
-
-
-"""

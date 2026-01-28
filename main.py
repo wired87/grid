@@ -1,5 +1,4 @@
 
-
 def set_shift(start_pos, shift_dirs, schema_grid):
     next_index_map = []
     for pos in start_pos:

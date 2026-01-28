@@ -1,14 +1,23 @@
 import jax
 import jax.numpy as jnp
-from jax import jit, vmap
+from jax import vmap
 
 
 class InjectorLayer:
 
-    def __init__(self, time, indices, values, db_layer, DIMS, amount_nodes):
-        self.time = time
-        self.indices = jnp.array(indices)
-        self.values = jnp.array(values)
+    def __init__(
+            self,
+            INJECTOR_TIME,
+            INJECTOR_INDICES,
+            INJECTOR_VALUES,
+            db_layer,
+            DIMS,
+            amount_nodes,
+            **cfg
+    ):
+        self.time = INJECTOR_TIME
+        self.indices = jnp.array(INJECTOR_INDICES)
+        self.values = jnp.array(INJECTOR_VALUES)
 
         self.db_layer=db_layer
 
@@ -22,18 +31,22 @@ class InjectorLayer:
 
         def _transform_single(item):
             midx, fi, param_trgt_index, pos_index_slice = item
-
-            _start, _len = self.db_layer.get_db_index(midx, fi, param_trgt_index)
-
-            shape = self.db_layer.extract_shape(midx, fi, param_trgt_index)
-
-            multiplicator = jax.lax.cond(
-                jnp.array(shape).shape[0] > 0,
-                lambda _: jnp.prod(jnp.array(shape)).astype(jnp.int32),  # True-Fall
-                lambda _: 1,  # False-Fall
-                operand=None
+            
+            _start, _len = self.db_layer.get_db_index(
+                midx, fi, param_trgt_index
             )
-            index = _start + (multiplicator * self.amount_nodes * self.DIMS)
+
+            # get shape for targeted
+            param_len = self.db_layer.get_abs_shape_idx(
+                midx, fi, param_trgt_index
+            )
+            index = _start + (
+                    self.amount_nodes *
+                    self.DIMS *
+                    self.db_layer.DB_PARAM_CONTROLLER[
+                        param_len
+                    ]
+            )
             return index
 
         def _transform_batch(batch):
@@ -47,32 +60,23 @@ class InjectorLayer:
         )
 
 
-    def inject_process(self, step, db_layer):
-        """
-        Applies injections based on self.inj_pattern and current step.
-        Supports the SOA structure: [module, field, param, node_index, schedule]
-        where schedule is list of [time, value].
-        """
+
+
+
+    def inject(self, idx, db_layer, step):
+        #tidx = self.time.index(step)
         jax.debug.print("inject_process...")
+        print("time", self.time)
+        print("step", step)
 
-        def _inject():
-            #tidx = self.time.index(step)
-            tidx = jnp.argmax(self.time == step)
-            # inject step
-            db_layer.nodes.at[
-                tuple(self.indices[tidx].T)
-            ].add(self.values[tidx])
+        print("self.indices[tidx]", self.indices[idx])
+        print("self.values[tidx]", self.values[idx])
+        # inject step
+        db_layer.nodes.at[
+            tuple(self.indices[idx].squeeze().T)
+        ].add(self.values[idx])
 
-        is_step = jnp.any(self.time == step)
-
-        jax.lax.cond(
-            is_step,
-            lambda _: _inject(),
-            lambda _: 1,
-            operand=None
-        )
         jax.debug.print("inject_process... done")
-
 
 
 """
@@ -91,7 +95,14 @@ for item in self.INJECTIONS:
 
 if not all_indices:
     return
+shape = self.db_layer.extract_shape(midx, fi, param_trgt_index)
 
+            multiplicator = jax.lax.cond(
+                jnp.array(shape).shape[0] > 0,
+                lambda _: jnp.prod(jnp.array(shape)).astype(jnp.int32),  # True-Fall
+                lambda _: 1,  # False-Fall
+                operand=None
+            )
 all_indices = jnp.array(all_indices)  # shape [N, 5]
 all_values = jnp.array(all_values)  # shape [N]
 """

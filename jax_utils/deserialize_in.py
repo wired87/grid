@@ -10,8 +10,7 @@ def parse_value(o):
         if s.startswith(("{", "[", '"', "true", "false", "null")):
             try:
                 o = json.loads(s)
-                if isinstance(o, list):
-                    return jnp.asarray(o)
+                return o
             except json.JSONDecodeError:
                 pass
 

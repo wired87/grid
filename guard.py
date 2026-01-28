@@ -31,18 +31,14 @@ class Guard:
             if isinstance(self.cfg[k], dict):
                 for i, o in self.cfg[k].items():
                     self.cfg[k][i] = parse_value(o)
+
         # layers
         self.gnn_layer = GNN(
-            INJECTIONS=self.cfg["INJECTIONS"],
             amount_nodes=AMOUNT_NODES,
             time=SIM_TIME,
-            METHODS=self.cfg["METHODS"],
-            DB=self.cfg["DB"],
-            ITERATORS=self.cfg["ITERATORS"],
             gpu=self.gpu,
-            method_to_db=self.cfg["METHODS"],
-            db_to_method=self.cfg["db_to_method"],
             DIMS=DIMS,
+            **self.cfg
         )
 
 
@@ -85,8 +81,8 @@ class Guard:
 
         # Construct result dictionary
         result = {
-            DB_CONTROLLER: serialized_history,
-            MODEL_CONTROLLER: serialized_model
+            "DB_CONTROLLER": serialized_history,
+            "MODEL_CONTROLLER": serialized_model
         }
 
         print("DATA DISTRIBUTED")

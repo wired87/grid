@@ -76,7 +76,6 @@ class Node(nnx.Module):
 
     calc -> generate gnn stuff -> paste to gnn_ds -> return None
 
-
     """
 
     # Example parameter (weight) to be learned
@@ -84,51 +83,38 @@ class Node(nnx.Module):
     def __init__(
             self,
             runnable: Callable,
-            method_id:str, #
-            mod_idx:int
+            #method_id:int,
     ):
         self.embedding_dim = 64
-        self.bias = nnx.Param(jnp.array([0.0]))  # Simple bias for the equation
 
         # Static pattern definitions - these should NOT be JAX arrays to allow tuple indexing
         self.runnable = jax.tree_util.Partial(runnable)
-        self.method_id = method_id
-        self.mod_idx = mod_idx
-        self.projector = nn.Dense(
-            self.embedding_dim,
-            name=str(self.method_id)
-        )
 
 
     def __call__(
             self,
-            old_g,
-            field_variation_structs,
-            in_axes_def,
+            grid,
+            in_axes_def
     ):
-        #
-        self.old_g = old_g
+
         features = []
         results = []
         #calculate new EQ step for all modules fields
 
-        for p_idx, (field_pattern, in_axes_def) in enumerate(
-                zip(field_variation_structs, in_axes_def)
-        ):
-             # patterns here is the nested tuple list for one pattern execution
-             outs, ins = self.process_equation(
-                 in_axes_def,
-                 field_pattern,
-             )
+        # patterns here is the nested tuple list for one pattern execution
+        outs, ins = self.process_equation(
+            grid,
+            in_axes_def
+        )
 
-             features_t = jnp.concatenate([ins, outs], axis=-1)
-             features.append(features_t)
+        features_t = jnp.concatenate([ins, outs], axis=-1)
+        features.append(features_t)
 
-             # sum calc result for variations for single field eq run
-             result = jnp.sum(outs)
+        # sum calc result for variations for single field eq run
+        result = jnp.sum(outs)
 
-             # apply field result -> db
-             results.append(result)
+        # apply field result -> db
+        results.append(result)
         return features, results
 
 
@@ -161,16 +147,23 @@ class Node(nnx.Module):
     def process_equation(
             self,
             inputs,
-            in_axes_def,
+            in_axes_def=0,
     ):
-        # Debug: check what we're working with
-        vmapped_kernel = vmap(
+        field_based_calc_result = jax.vmap(
             self.runnable,
-            in_axes=in_axes_def,
-        )
+            in_axes=in_axes_def # Dies wendet Achse 0 auf ALLE 5 Argumente an
+        )(*inputs)
 
-        field_based_calc_result = vmapped_kernel(*inputs)
+        print("field_based_calc_result", field_based_calc_result)
+        #vmapped_kernel(*inputs)
         return field_based_calc_result, inputs
+
+
+
+
+
+
+
 
     def get_inputs(self, patterns, emap):
         len_params_per_methods = []

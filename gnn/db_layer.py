@@ -3,7 +3,6 @@ import jax.numpy as jnp
 from jax import jit, vmap
 
 from dtypes import TimeMap
-from jax_utils.conv_flat_to_shape import bring_flat_to_shape
 
 
 class DBLayer:
@@ -13,30 +12,31 @@ class DBLayer:
             self,
             amount_nodes,
             gpu,
-            module_struct,
-            method_to_db,
-            db_to_method,
+            METHODS_PER_MOD_LEN_CTLR,
+            DB_TO_METHOD_EDGES,
+            METHOD_TO_DB,
             AXIS,
             DB,
             AMOUNT_PARAMS_PER_FIELD,
             DB_SHAPE,
             DB_PARAM_CONTROLLER,
             DIMS,
-            fields,
+            FIELDS,
+            **cfg
     ):
         # DB Load and parse
         self.DB = DB
 
         self.AXIS = AXIS
-        print("AMOUNT_PARAMS_PER_FIELD",AMOUNT_PARAMS_PER_FIELD)
+
         self.AMOUNT_PARAMS_PER_FIELD = jnp.array(AMOUNT_PARAMS_PER_FIELD)
         self.DB_PARAM_CONTROLLER = jnp.array(DB_PARAM_CONTROLLER)
         self.DB_SHAPE = DB_SHAPE
-        self.fields = jnp.array(fields)
+        self.FIELDS = jnp.array(FIELDS)
 
-        self.module_struct = jnp.array(module_struct)
-        self.db_to_method = jnp.array(db_to_method)
-        self.method_to_db = jnp.array(method_to_db)
+        self.METHODS_PER_MOD_LEN_CTLR = jnp.array(METHODS_PER_MOD_LEN_CTLR)
+        self.METHOD_TO_DB = jnp.array(METHOD_TO_DB)
+        self.DB_TO_METHOD_EDGES = jnp.array(DB_TO_METHOD_EDGES)
 
         # convert bytes array
 
@@ -47,6 +47,7 @@ class DBLayer:
 
 
         self.history_nodes = [] # Collects state over time
+
         self.build_db(
             amount_nodes,
         )
@@ -94,6 +95,8 @@ class DBLayer:
         )
 
 
+
+
     def sort_results(self, step_results):
         """
         - save coords to paste vals
@@ -101,9 +104,9 @@ class DBLayer:
         # RESULT -> HISTORY DB todo: upsert directly to bq
         # todo: add param stacks on single eq layer
         n variations = n return
-
         """
         jax.debug.print("sort_results... ")
+
         def _update(res, coords):
             _start, _len = self.get_db_index(*coords)
             jax.lax.dynamic_update_slice(
@@ -117,7 +120,7 @@ class DBLayer:
             in_axes=(0,0)
         )(
             step_results,
-            self.method_to_db
+            self.METHOD_TO_DB
         )
         jax.debug.print("sort_results... done")
 
@@ -133,39 +136,91 @@ class DBLayer:
         # receive 1d array _> scale each qx 0 for n nodes
         jax.debug.print("build_db...")
 
-        nodes = []
+        SCALED_DB = []
 
         # scale db nodes
-        for i, (n_space, ax) in enumerate(zip(self.DB_PARAM_CONTROLLER, self.AXIS)):
+        for i, (len_unscaled_param, ax) in enumerate(
+                zip(self.DB_PARAM_CONTROLLER, self.AXIS)
+        ):
+            print("len_unscaled_param", len_unscaled_param)
+            # len_unscaled_param:int = len unscaled single param space
             prev = int(
                 jnp.sum(
                     jnp.array(self.DB_PARAM_CONTROLLER[:i])
                 )
             )
 
-            # extract param space
-            param = jax.lax.dynamic_slice_in_dim(
+            # extract param space from DB
+            # e.g. prov = 0
+            # len_unscaled_param = 4
+            # exct pos 0-4 (0000) from DB = param
+            single_param_value = jax.lax.dynamic_slice_in_dim(
                 self.DB,
-                prev,
-                jnp.sum(jnp.array(n_space)),
+                prev, # start e.g. at 0
+
+                # set end for single param
+                len_unscaled_param,
             )
 
+            # check scale value -> add nodes
             if ax == 0:
                 slice = jnp.tile(
-                    param,
-                    (amount_nodes*self.DIMS,)
+                    single_param_value,
+                    (
+                        amount_nodes*self.DIMS
+                    )
                 )
-                nodes.extend(slice)
-                self.SCALED_PARAMS.append(len(slice))
+
+                print(
+                    f"extend {len_unscaled_param} to ({len(slice)})"
+                )
+
+                SCALED_DB.extend(slice)
+
+                self.SCALED_PARAMS.append(
+                    len(slice)
+                )
             else:
                 # const
-                nodes.append(n_space)
-                self.SCALED_PARAMS.append(len(n_space))
+                SCALED_DB.append(len_unscaled_param)
+                self.SCALED_PARAMS.append(len_unscaled_param)
 
         # scale nodes down db
-        nodes = jnp.array(nodes)
+        nodes = jnp.array(SCALED_DB)
+        self.SCALED_PARAMS = jnp.array(self.SCALED_PARAMS)
+        #print("self.SCALED_PARAMS created", self.SCALED_PARAMS)
+
         self.nodes = jax.device_put(nodes, self.gpu)
         jax.debug.print("build_db... done")
+
+
+    def get_abs_shape_idx(self, mod_idx, fidx, pidx):
+        """
+        GET ABS PATH for a single param unscaled
+        todo merge and improve
+        """
+        jax.debug.print("extract_shape... ")
+        # sum amount equations till current + all their fields
+        # get amount fields
+
+        indices = jnp.arange(len(self.FIELDS))
+        mask = indices < mod_idx
+        amount_fields = jnp.sum(jnp.where(mask, self.FIELDS, 0))
+        print("amount_fields", amount_fields)
+
+        # get abs fiedld idx
+        amount_fields += fidx
+
+        # get relative amount params till field
+        indices = jnp.arange(len(self.AMOUNT_PARAMS_PER_FIELD))
+        mask = indices < amount_fields
+        amount_params_pre_fidx = jnp.sum(jnp.where(mask, self.AMOUNT_PARAMS_PER_FIELD, 0))
+
+        # calc relative field idx to abs field idx sum
+        abs_param_idx = amount_params_pre_fidx + pidx
+
+        jax.debug.print("shape set...")
+        return abs_param_idx
 
 
     def extract_shape(self, mod_idx, fidx, pidx):
@@ -177,87 +232,140 @@ class DBLayer:
         jax.debug.print("extract_shape... ")
         # sum amount equations till current + all their fields
         # get amount fields
-        amount_fields = jnp.sum(self.fields[:mod_idx])
+
+        indices = jnp.arange(len(self.FIELDS))
+        mask = indices < mod_idx
+        amount_fields = jnp.sum(jnp.where(mask, self.FIELDS, 0))
+        print("amount_fields", amount_fields)
 
         # get abs fiedld idx
         amount_fields += fidx
 
         # get relative amount params till field
-        amount_params_pre_fidx = jnp.sum(self.AMOUNT_PARAMS_PER_FIELD[:amount_fields])
+        indices = jnp.arange(len(self.AMOUNT_PARAMS_PER_FIELD))
+        mask = indices < amount_fields
+        amount_params_pre_fidx = jnp.sum(jnp.where(mask, self.AMOUNT_PARAMS_PER_FIELD, 0))
 
         # calc relative field idx to abs field idx sum
         abs_param_idx = amount_params_pre_fidx + pidx
 
-        shape = self.DB_SHAPE[abs_param_idx]
+        shape = jnp.array(self.DB_SHAPE)[abs_param_idx]
 
         jax.debug.print("shape set...")
         return shape
 
+    def get_axis_shape(self, example_variation):
+        print("example_variation", example_variation)
+        all_ax = []
+        all_shape = []
+        for coord in example_variation:
+            db_idx = self.get_rel_db_index(*coord)
+            axis = self.AXIS[db_idx]
+            shape = self.DB_SHAPE[db_idx]
+            all_ax.append(axis)
+            all_shape.append(shape)
+        return all_ax, all_shape
+
+    def get_rel_db_index(self, mod_idx, field_idx, param_in_field_idx):
+        print("get_rel_db_index for mod_idx, field_idx, param_in_field_idx:", mod_idx, field_idx, param_in_field_idx)
+        all_fields_preset = sum(self.FIELDS[:mod_idx])
+        total_fields_idx = all_fields_preset + field_idx
+        print("total_fields_idx", total_fields_idx)
+
+        all_params_preset = len(self.AMOUNT_PARAMS_PER_FIELD[:total_fields_idx])
+        rel_param_idx = all_params_preset + 1  # ü1 becaue current len
+
+
+        return rel_param_idx
 
     def get_db_index(self, mod_idx, field_idx, param_in_field_idx):
         """
-        Optimierte JAX-Version ohne dynamisches Slicing.
-        Nutzt Maskierung, um Tracer-Fehler zu vermeiden.
+        field_param_start_idx = jnp.take(
+            AMOUNT_PARAMS_PER_FIELD_CUMSUM,
+            jnp.arange(total_fields_idx)
+        )
         """
+        print("get_db_index for mod_idx, field_idx, param_in_field_idx:", mod_idx, field_idx, param_in_field_idx)
+        FIELDS_CUMSUM = jnp.cumsum(self.FIELDS)
+        AMOUNT_PARAMS_PER_FIELD_CUMSUM = jnp.cumsum(
+            self.AMOUNT_PARAMS_PER_FIELD
+        )
+        SCALED_PARAMS_CUMSUM = jnp.cumsum(
+            jnp.array(self.SCALED_PARAMS)
+        )
 
-        mask_fields = jnp.arange(jnp.array(self.fields).shape[0]) < mod_idx
-        amount_fields_base = jnp.sum(jnp.where(mask_fields, self.fields, 0))
+        #all_fields_preset = jnp.take(FIELDS_CUMSUM, jnp.arange(mod_idx))
+        all_fields_preset = jnp.where(
+            mod_idx >= 0,
+            FIELDS_CUMSUM[mod_idx-1],
+            0
+        )
+        total_fields_idx = all_fields_preset + field_idx
+        print("total_fields_idx", total_fields_idx)
 
-        print("amount_fields_base", amount_fields_base)
-        print("mask_fields", mask_fields)
 
-        # Gesamtzahl der Felder bis zum aktuellen field_idx
-        total_fields_idx = amount_fields_base + field_idx
+        field_param_start_idx = jnp.where(
+            total_fields_idx >= 0,
+            AMOUNT_PARAMS_PER_FIELD_CUMSUM[total_fields_idx-1],
+            0
+        )
 
-        # 2. amount_params_pre_fidx berechnen
-        # Maske für die Parameter-Summe
-        mask_params = jnp.arange(self.AMOUNT_PARAMS_PER_FIELD.shape[0]) < total_fields_idx
-        amount_params_pre_fidx = jnp.sum(jnp.where(mask_params, self.AMOUNT_PARAMS_PER_FIELD, 0))
+        abs_param_idx = field_param_start_idx + param_in_field_idx
+        print("abs_param_idx", abs_param_idx)
 
-        # Absoluter Parameter Index
-        abs_param_idx = amount_params_pre_fidx + param_in_field_idx
+        abs_param_start_idx = jnp.where(
+            abs_param_idx >= 0,
+            SCALED_PARAMS_CUMSUM[abs_param_idx - 1],
+            0 # first field
+        )
 
-        # 3. Skalierte Werte berechnen
-        # Maske für SCALED_PARAMS
-        mask_scaled = jnp.arange(self.SCALED_PARAMS.shape[0]) < abs_param_idx
-        abs_param_db_index_scaled = jnp.sum(jnp.where(mask_scaled, self.SCALED_PARAMS, 0))
+        print("abs_param_start_idx", abs_param_start_idx)
 
-        # Einzelwert auslesen (Indizierung ist in JAX erlaubt, solange es kein Slicing ist)
-        # Falls abs_param_idx außerhalb liegt, gibt JAX den letzten Wert zurück oder wirft Fehler
-        len_scaled_param = self.SCALED_PARAMS[abs_param_idx]
+        field_param_end_idx = jnp.where(
+            abs_param_idx >= 0,
+            SCALED_PARAMS_CUMSUM[abs_param_idx],
+            0
+        )
+        print("field_param_end_idx", field_param_end_idx)
 
-        return abs_param_db_index_scaled, len_scaled_param
-
+        slice_len = field_param_end_idx - abs_param_start_idx
+        print("slice_len", slice_len)
+        return abs_param_start_idx, slice_len
 
 
 
     def extract_field_param_variation(
             self,
-            variation_param_list
+            coords_eq_param_grids
     ):
         """
         Extrahiert Parameter-Blöcke aus der DB und summiert Variationen auf.
-
         db_indices: list[tuple] - [Variation_Index][Parameter_Index]
         todo unter 3d tuple speichern
         """
         jax.debug.print("Summating Field Parameters...")
+        variation_param_idx = jnp.array(coords_eq_param_grids)
+        print("variation_param_idx", variation_param_idx)
 
-        idx_matrix = jnp.array(variation_param_list)
-        extracted_params = jax.vmap(
-            self.get_parameter_vector,
+        # get array of all flat values
+        flattened_method_param_grid_for_all_variations = jax.vmap(
+            self.extract_flattened_grid,
             in_axes=0
-        )(idx_matrix)
+        )(variation_param_idx)
 
         jax.debug.print("extract_field_param_variation...")
-        return extracted_params
+        return flattened_method_param_grid_for_all_variations
 
-    def get_parameter_vector(self, item):
+
+    def extract_flattened_grid(self, item):
         # Extract single parameter flatten grid from db
+        print("extract_flattened_grid", item)
         mod_idx, fidx, pidx = item
-
+        print("extract_flattened_grid with mod_idx, fidx, pidx", mod_idx, fidx, pidx)
         # extract scaled idx. from db
-        _start, _len = self.get_db_index(mod_idx, fidx, pidx)
+        _start, _len = self.get_db_index(
+            mod_idx, fidx, pidx
+        )
 
         # receive flatten entris
         flatten_grid = jax.lax.dynamic_slice_in_dim(
@@ -265,19 +373,9 @@ class DBLayer:
             _start,
             _len,
         )
+        print("flatten_grid", flatten_grid)
+        return flatten_grid
 
-        # get shape
-        shape = self.extract_shape(
-            mod_idx, fidx, pidx
-        )
-
-        # reshape received entries
-        reshaped_grid = bring_flat_to_shape(
-            flatten_grid,
-            shape
-        )
-        jax.debug.print("get_parameter_vector ... dones")
-        return reshaped_grid
 
 
     ### TODO LATER
@@ -319,6 +417,7 @@ class DBLayer:
         return TimeMap(
             nodes,
         )
+
 
 
 """
@@ -419,7 +518,7 @@ This    BatchTracer with object id 1965655827376 was created on line:
        
 
         # get amount fields
-        amount_fields = jnp.sum(self.fields[:mod_idx])
+        amount_fields = jnp.sum(self.FIELDS[:mod_idx])
 
         # get abs fiedld idx
         amount_fields += field_idx
@@ -439,10 +538,135 @@ This    BatchTracer with object id 1965655827376 was created on line:
 
 
 
+    def get_db_index(self, mod_idx, field_idx, param_in_field_idx):
+        print("get_db_index for mod_idx, field_idx, param_in_field_idx:", mod_idx, field_idx, param_in_field_idx)
+        all_fields_preset = sum(self.FIELDS[:mod_idx])
+        total_fields_idx = all_fields_preset + field_idx
+        print("total_fields_idx", total_fields_idx)
+
+        all_params_preset = len(self.AMOUNT_PARAMS_PER_FIELD[:total_fields_idx])
+        rel_param_idx = all_params_preset + 1 # ü1 becaue current len
+
+        return scaled_param_len, abs_pram_len
+
+
+        # todo stack on param level - save module base ctlr
+        # use unscaled idx to get scaled
+        scaled_param_len = sum(self.SCALED_PARAMS[:rel_param_idx])
+        abs_pram_len = self.SCALED_PARAMS[rel_param_idx]
+        
+        all_offsets = jnp.cumsum(jnp.array(self.AMOUNT_PARAMS_PER_FIELD))
+        amount_fields_base = jnp.argmax(all_offsets < total_fields_idx)
+        print("amount_fields_base", amount_fields_base)
+        # Absoluter Parameter Index
+        abs_param_idx = amount_params_pre_fidx + param_in_field_idx
+        print("abs_param_idx", abs_param_idx)
+
+        # 3. Skalierte Werte berechnen
+        # Maske für SCALED_PARAMS
+        mask_scaled = jnp.arange(jnp.array(self.SCALED_PARAMS).shape[0]) < abs_param_idx
+        abs_param_db_index_scaled = jnp.sum(jnp.where(mask_scaled, jnp.array(self.SCALED_PARAMS), 0))
+        print("abs_param_db_index_scaled", abs_param_db_index_scaled)
+
+        len_scaled_param = jnp.take(jnp.array(self.SCALED_PARAMS), abs_param_idx)
+        print("len_scaled_param", len_scaled_param)
+        
+        return scaled_param_len, abs_pram_len
+        
+        
+        
+    def get_db_index(self, mod_idx, field_idx, param_in_field_idx):
+        #print("get_db_index for mod_idx, field_idx, param_in_field_idx:", mod_idx, field_idx, param_in_field_idx)
+        FIELDS_CUMSUM = jnp.cumsum(self.FIELDS)
+        AMOUNT_PARAMS_PER_FIELD_CUMSUM = jnp.cumsum(self.AMOUNT_PARAMS_PER_FIELD)
+        SCALED_PARAMS_CUMSUM = jnp.cumsum(jnp.array(self.SCALED_PARAMS))
+
+        all_fields_preset = jnp.sum(jnp.take(FIELDS_CUMSUM, jnp.arange(mod_idx)))
+        print("all_fields_preset", all_fields_preset)
+
+        total_fields_idx = all_fields_preset + field_idx
+        print("total_fields_idx", total_fields_idx)
+
+        field_param_start_idx = jnp.sum(jnp.take(AMOUNT_PARAMS_PER_FIELD_CUMSUM, jnp.arange(total_fields_idx)))
+
+        abs_param_idx = field_param_start_idx + param_in_field_idx
+
+        field_param_start_idx = jnp.sum(
+            jnp.take(
+                SCALED_PARAMS_CUMSUM,
+                jnp.arange(total_fields_idx-1)
+            )
+        )
+
+        field_param_end_idx = jnp.sum(
+            jnp.take(
+                SCALED_PARAMS_CUMSUM,
+                jnp.arange(total_fields_idx)
+            )
+        )
+
+        return field_param_start_idx, field_param_end_idx - field_param_start_idx
+
+
+
+
+    def get_db_index(self, mod_idx, field_idx, param_in_field_idx):
+        # WICHTIG: self.FIELDS, self.SCALED_PARAMS etc. sollten jnp.arrays sein.
+        # Wir wandeln sie hier zur Sicherheit um, idealerweise machst du das im __init__.
+        fields = jnp.array(self.FIELDS)
+        scaled_params = jnp.array(self.SCALED_PARAMS)
+
+        # 1. all_fields_preset = sum(self.FIELDS[:mod_idx])
+        # Wir berechnen die kumulative Summe und verschieben sie, damit der
+        # Index 0 auch 0 ergibt (daher das jnp.roll oder jnp.pad).
+        fields_cumsum = jnp.cumsum(fields)
+        # Nutze jnp.where, um das Slicing zu simulieren:
+        all_fields_preset = jnp.sum(jnp.where(jnp.arange(fields.shape[0]) < mod_idx, fields, 0))
+
+        total_fields_idx = all_fields_preset + field_idx
+
+        # 2. all_params_preset = len(self.AMOUNT_PARAMS_PER_FIELD[:total_fields_idx])
+        # In JAX ist die Länge eines Slices [:n] einfach n.
+        all_params_preset = total_fields_idx
+        rel_param_idx = all_params_preset + 1
+
+        # 3. scaled_param_len = sum(self.SCALED_PARAMS[:rel_param_idx])
+        # Wieder Maskierung statt Slicing
+        mask_scaled = jnp.arange(scaled_params.shape[0]) < rel_param_idx
+        scaled_param_len = jnp.sum(jnp.where(mask_scaled, scaled_params, 0))
+
+        # 4. abs_pram_len = self.SCALED_PARAMS[rel_param_idx]
+        # In vmap nutzt man jnp.take für dynamische Indizes
+        abs_pram_len = jnp.take(scaled_params, rel_param_idx)
+
+        return scaled_param_len, abs_pram_len
 
 """
 
+"""
 
+FIELDS_CUMSUM = jnp.cumsum(self.FIELDS)
+AMOUNT_PARAMS_PER_FIELD_CUMSUM = jnp.cumsum(self.AMOUNT_PARAMS_PER_FIELD)
+SCALED_PARAMS_CUMSUM = jnp.cumsum(jnp.array(self.SCALED_PARAMS))
+
+all_fields_preset = jnp.where(
+mod_idx > 0,
+FIELDS_CUMSUM[mod_idx - 1],
+0
+)
+
+total_fields_idx = all_fields_preset + field_idx
+
+field_param_start_idx = jnp.where(
+total_fields_idx > 0,
+SCALED_PARAMS_CUMSUM[total_fields_idx - 1],
+0
+)
+
+field_param_end_idx = SCALED_PARAMS_CUMSUM[total_fields_idx]
+
+return field_param_start_idx, field_param_end_idx - field_param_start_idx
+"""
 
 
 

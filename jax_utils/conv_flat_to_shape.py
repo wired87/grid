@@ -18,5 +18,6 @@ def bring_flat_to_shape(lst, shape):
 
     # Reshape
     reshaped = trimmed.reshape((n_blocks, *shape))
+    print("trgt shape", shape)
     return reshaped
 

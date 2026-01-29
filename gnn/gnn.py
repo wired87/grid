@@ -8,6 +8,17 @@ from mod import Node
 from utils import SHIFT_DIRS, create_runnable
 
 import jax.numpy as jnp
+"""
+
+Wir sortieren alles nach modul -> methods:
+methoden
+edges db def
+
+fehelr in:
+create_db 
+set edges 
+
+"""
 
 
 class GNN:
@@ -191,6 +202,7 @@ class GNN:
                 eq_idx,
             )
 
+            print("variations", variations)
 
             examle_variation = variations[0]
             all_ax, all_shape = self.db_layer.get_axis_shape(examle_variation)
@@ -201,38 +213,49 @@ class GNN:
             # a 1
             # b 2
             #variations = variations.T
+            print("variations", variations)
             transformed = [[] for _ in range(amount_params)]
             for i in range(amount_params):
                 for var in variations:
                     transformed[i].append(var[i])
             transformed = jnp.array(transformed)
-            print("transformed", transformed)
 
+            #
+            print("transformed", transformed)
 
             # get flatten params for all variations
             # # # #
             # a 1
             # b 2
             flatten_transformed = []
-            for param_grid in transformed:
+            for i, param_grid in enumerate(transformed):
                 # problem: jax cant handle dynamic shapes...
                 # param_grid
-                new_grid = []
-                for item in param_grid:
-                    new_grid.extend(
-                        self.db_layer.extract_flattened_grid(item)
+                single_param_grid = []
+                #print("param_grid", param_grid)
+                for coords in param_grid:
+                    #print("coords", coords)
+                    coord_result = self.db_layer.extract_flattened_grid(coords)
+                    print(f"coord_result for {i} {coords}", len(coord_result), coord_result)
+                    single_param_grid.extend(
+                        coord_result
                     )
-                flatten_transformed.append(new_grid)
+                #print("single_param_grid", single_param_grid, len(single_param_grid))
+                flatten_transformed.append(single_param_grid)
+             # transformed shapes [((60, 3), 60), ((60, 3), 60), ((60, 3), 60), ((60, 3), 60), ((60, 3), 60)]
+            #flatten_transformed [((1346,), 1346), ((1301,), 1301), ((1091,), 1091), ((1308,), 1308), ((1077,), 1077)]
+
 
             #
             inputs = []
             for shape, variation_grids in zip(all_shape, flatten_transformed):
-                print("variation_grids", variation_grids)
+                #print("variation_grids", variation_grids)
                 result = bring_flat_to_shape(
                     jnp.array(variation_grids),
                     shape
                 )
                 inputs.append(jnp.array(result))
+            print("inputs", [(jnp.array(r).shape, len(r)) for r in inputs])
 
             # calc single equation
             features, results = node(
@@ -275,22 +298,30 @@ class GNN:
         Extrahiert alle Variationen für ein spezifisches Gleichung.
         Navigiert durch DB und AXIS und skaliert Parameter bei axis == 0 auf amount_nodes.
         """
-        jax.debug.print("📊 Extracting Variations for Mod {m} Eq {e}", m=mod_idx, e=eq_idx)
+        jax.debug.print("extract_eq_variations Mod {m} Eq {e}", m=mod_idx, e=eq_idx)
 
-        start_sum = 0
-        for i, (amount_variations, amount_params) in enumerate(
-            zip(
-                self.DB_CTL_VARIATION_LEN_PER_EQUATION[:eq_idx],
-                self.METHOD_PARAM_LEN_CTLR[:eq_idx]
-            )
-        ):
-            start_sum += amount_variations * amount_params
+        variations = jnp.array(self.DB_CTL_VARIATION_LEN_PER_EQUATION)
+        params_per_eq = jnp.array(self.METHOD_PARAM_LEN_CTLR)
 
-        amount_params_current_eq = self.METHOD_PARAM_LEN_CTLR[eq_idx]
+        # loop calc now * prev
+        products = variations * params_per_eq
+        offsets = jnp.concatenate([jnp.array([0]), jnp.cumsum(products)])
+
+        start_sum = offsets[eq_idx]
+        print("start_sum", start_sum)
+
+        # amount params per eq
+        #amount_params_current_eq = self.METHOD_PARAM_LEN_CTLR[eq_idx]
+        amount_params_current_eq = jnp.take(
+            jnp.array(self.METHOD_PARAM_LEN_CTLR),
+            eq_idx,
+        )
         print("amount_params_current_eq", amount_params_current_eq)
 
         # get len of variations per equation
-        amount_variations_current_eq = self.DB_CTL_VARIATION_LEN_PER_EQUATION[eq_idx]
+        amount_variations_current_eq = jnp.take(jnp.array(self.DB_CTL_VARIATION_LEN_PER_EQUATION), eq_idx)
+        print("amount_variations_current_eq", amount_variations_current_eq)
+
         total_amount_params_current_eq = amount_params_current_eq * amount_variations_current_eq
         print("total_amount_params_current_eq", total_amount_params_current_eq)
 
@@ -299,21 +330,17 @@ class GNN:
             jnp.array(self.DB_TO_METHOD_EDGES),
             start_sum,
             total_amount_params_current_eq,
+            axis=0,
         )
         print("slice", slice)
 
-        # get chunks len
-        num_chunks = total_amount_params_current_eq // amount_params_current_eq
-
-        # Truncate extras if len(receive) is not divisible by n
-        receive_truncated = slice[:num_chunks * amount_params_current_eq]
-
         # Reshape in (num_chunks, n, len(inner_list))
-        result = receive_truncated.reshape(
-            num_chunks,
+        result = slice.reshape(
+            total_amount_params_current_eq // amount_params_current_eq,
             amount_params_current_eq,
-            -1
+            3
         )
+
         print("result", result)
         return result, amount_params_current_eq
 

@@ -6,13 +6,13 @@ from flax import linen as nn
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from jax import vmap
-from typing import Callable, List, Tuple
+from typing import Callable
+
 
 from utils import SHIFT_DIRS, DIM
 
-
-
+def test(*args):
+    return True
 
 class ModuleUtils:
 
@@ -67,6 +67,8 @@ class ModuleUtils:
         return attr_keys
 
 
+
+
 class Node(nnx.Module):
 
     """
@@ -83,40 +85,56 @@ class Node(nnx.Module):
     def __init__(
             self,
             runnable: Callable,
-            #method_id:int,
     ):
         self.embedding_dim = 64
-
-        # Static pattern definitions - these should NOT be JAX arrays to allow tuple indexing
-        self.runnable = jax.tree_util.Partial(runnable)
-
+        self.runnable = test
 
     def __call__(
             self,
             grid,
             in_axes_def
     ):
-
-        features = []
         results = []
         #calculate new EQ step for all modules fields
 
         # patterns here is the nested tuple list for one pattern execution
-        outs, ins = self.process_equation(
+        outs = self.process_equation(
             grid,
             in_axes_def
         )
 
-        features_t = jnp.concatenate([ins, outs], axis=-1)
-        features.append(features_t)
-
-        # sum calc result for variations for single field eq run
-        result = jnp.sum(outs)
-
         # apply field result -> db
-        results.append(result)
-        return features, results
+        results.append(outs)
+        return results
 
+    def features(self, in_axes_def, inputs, input_shapes):
+        kernel = jax.vmap(
+            fun=self.feature_encoder,
+            in_axes=(*in_axes_def, 0, None)
+        )
+        features = kernel(
+            inputs
+        )
+        return features
+
+
+
+
+    def process_equation(
+            self,
+            inputs,
+            in_axes_def,
+    ):
+        #print("inputs", inputs)
+        kernel = jax.vmap(
+            fun=self.runnable,
+            in_axes=in_axes_def #(0,0,None,None,None)
+        )
+        result = kernel(
+            *inputs
+        )
+
+        return result, inputs
 
     def transform_feature(
             self,
@@ -142,26 +160,6 @@ class Node(nnx.Module):
             )
         jax.debug.print("transform_feature... done")
         return feature_matrix_eq_tstep
-
-
-    def process_equation(
-            self,
-            inputs,
-            in_axes_def=0,
-    ):
-        field_based_calc_result = jax.vmap(
-            self.runnable,
-            in_axes=in_axes_def # Dies wendet Achse 0 auf ALLE 5 Argumente an
-        )(*inputs)
-
-        print("field_based_calc_result", field_based_calc_result)
-        #vmapped_kernel(*inputs)
-        return field_based_calc_result, inputs
-
-
-
-
-
 
 
 

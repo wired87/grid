@@ -1,4 +1,3 @@
-
 import os
 import jax.numpy as jnp
 
@@ -6,7 +5,6 @@ from data_handler.main import load_data
 from gnn.gnn import GNN
 
 import jax
-
 from jax_utils.deserialize_in import parse_value
 
 
@@ -44,21 +42,22 @@ class Guard:
 
     def main(self):
         self.run()
-        results = self.finish()
+        #results = self.finish()
         print("SIMULATION PROCESS FINISHED")
-        return results
+        return None
 
 
     def run(self):
         # start sim on gpu
         print("run...")
+        #self.gnn_layer.db_layer.check()
         self.gnn_layer.main()
         print("run... done")
 
     def finish(self):
         # Collect data
         history_nodes = self.gnn_layer.db_layer.history_nodes
-        model_skeleton = self.gnn_layer.model_skeleton
+        model_skeleton = self.gnn_layer.db_layer.model_skeleton
 
         # Serialization helper
         def serialize(data):

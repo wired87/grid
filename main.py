@@ -13,6 +13,7 @@ def set_shift(start_pos, shift_dirs, schema_grid):
     return next_index_map
 
 
+
 GUARD = None
 def deploy_guard():
     ref = Guard.options(

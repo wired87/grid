@@ -1,11 +1,13 @@
 import jax
-from jax import vmap, jit
+from jax import jit, vmap
 # todo _BYTE binary_view = ' '.join(format(b, '08b') for b in text.encode('utf-8'))
 from gnn.db_layer import DBLayer
+from gnn.feature_encoder import FeatureEncoder
 from gnn.injector import InjectorLayer
 from jax_utils.conv_flat_to_shape import bring_flat_to_shape
 from mod import Node
-from utils import SHIFT_DIRS, create_runnable
+from utils import SHIFT_DIRS, create_runnable, debug_callable
+from flax import nnx
 
 import jax.numpy as jnp
 """
@@ -37,6 +39,8 @@ class GNN:
         for k, v in cfg.items():
             setattr(self, k, v)
 
+        self.model_feature_dims = 64
+
         self.time = time
         self.amount_nodes = amount_nodes
         # Generate grid coordinates based on amount_nodes dimensionality
@@ -44,7 +48,7 @@ class GNN:
             (i,i,i)
             for i in range(amount_nodes)
         ]
-
+        self.feature_encoder = FeatureEncoder()
         self.len_params_per_methods = {}
         self.change_store = []
 
@@ -64,20 +68,37 @@ class GNN:
             **cfg
         )
 
-        # features jsut get etend naturally to the arr
-        self.model_skeleton = jnp.array([])
+        self.all_axs = []
+        self.all_shapes = []
+
         print("Node initialized and build successfully")
+
+    def prepare(self):
+        self.build_gnn_equation_nodes()
+
+        # DB
+        self.db_layer.build_db(
+            self.amount_nodes,
+        )
+
+        # layer to define all ax et
+        self.step_0()
 
 
     def main(self):
-        self.build_gnn_equation_nodes()
-
+        self.prepare()
         self.simulate()
-
-        serialized = self.serialize(self.model_skeleton)
+        serialized = self.serialize(
+            self.feature_encoder.feature_time_store
+        )
         print("serialized model_skeleton", serialized)
 
         jax.debug.print("process finished.")
+
+
+
+
+
 
     def simulate(self):
         try:
@@ -88,6 +109,8 @@ class GNN:
                     n=self.time
                 )
 
+                """
+                
                 if step in self.injector.time:
                     # apply injections inside db layer
                     self.injector.inject(
@@ -95,10 +118,21 @@ class GNN:
                         step=step,
                         db_layer=self.db_layer
                     )
+                
+                """
 
                 # get params from DB layer and init calc
-                self.calc_batch()
+                all_ins, all_results = self.calc_batch()
 
+                # generate model tstep
+                self.feature_encoder(
+                    all_ins,
+                    all_results,
+                    self.all_shapes,
+                )
+
+                self.db_layer.save_t_step(all_results)
+                # todo just save what has changed - not the entire array
         except Exception as e:
             jax.debug.print(f"Err simulate: {e}")
 
@@ -146,150 +180,159 @@ class GNN:
 
 
 
-    def _workflow(self):
-        model = [
-            # INJECTIOIN -> to get directly inj pattern (todo switch throguh db mapping)
-            # DB SCHEMA
-            self.db_layer.db_pattern,
 
-            # EDGE DB -> METHOD
-            self.method_struct,
+    def short_transformed(self, all_ax, transformed):
+        new_t = []
+        for ax, st in zip(all_ax, transformed):
+            # Statisches Python-if: JAX sieht nur das Ergebnis
+            if ax == 0:
+                new_t.append(st)  # Behält Shape (12, 4)
+            else:
+                new_t.append(st[0])  # Reduziert auf Shape (4,)
+        return new_t
 
-            # FEATURES
-            self.model_skeleton,
-
-            # FEATURE DB
-            self.def_out_db
-        ]
-
-        return model
 
     def get_mod_idx(self, abs_eq_idx):
         # get mod_idx based on eq_idx
-        """total = 0
-        for i, amount_mthods in enumerate(self.METHODS):
-            total += amount_mthods
-            if total >= abs_eq_idx:
-                return i
-        """
         # 1,2 -> 1,3
         cum = jnp.cumsum(jnp.array(self.MODULES))  # kumulative Summe
         # finde erstes i, bei dem cum >= abs_eq_idx
         idx = jnp.argmax(cum >= abs_eq_idx)
         return idx
 
-    def calc_batch(self):
-        jax.debug.print("calc_batch...")
-        # calc all methods and apply result to new g
-        all_results = []
 
-        # START LOOP
-        node: Node
+    def step_0(self):
+        print("step_0...")
         for eq_idx, node in enumerate(self.METHODS):
             mod_idx = self.get_mod_idx(eq_idx)
-            print("mod_idx", mod_idx)
 
-            """ 
-            # extract values
-            [[ 0,  7,  6],
-            [ 0,  7,  7],
-            [ 3,  0,  9],
-            [ 3,  0, 10],
-            [ 3,  0,  0]],
-            """
             variations, amount_params = self.extract_eq_variations(
                 mod_idx,
                 eq_idx,
             )
 
-            print("variations", variations)
-
             examle_variation = variations[0]
-            all_ax, all_shape = self.db_layer.get_axis_shape(examle_variation)
+            axs, shapes = self.db_layer.get_axis_shape(examle_variation)
 
+            self.all_axs.append(axs)
+            self.all_shapes.append(shapes)
+        print("step_0... done")
+
+
+
+
+
+    def build_projections(self):
+        self.projection_shapes = []
+
+        # extend
+        for i in range(len(self.all_shapes)):
+            self.projection_shapes.append(
+                [
+                    *self.all_shapes[i],
+                    self.db_layer.OUT_SHAPES[i]
+                ]
+            )
+
+        return [
+            [
+                nnx.Linear(
+                    in_features=shape,
+                    out_features=self.model_feature_dims,
+                    rngs=nnx.Rngs
+                )
+                for shape in shapes
+            ]
+           for shapes in self.projection_shapes
+        ]
+
+
+    def calc_batch(self):
+        jax.debug.print("calc_batch...")
+        # calc all methods and apply result to new g
+        all_results = []
+        all_ins = []
+        # START LOOP
+        node: Node
+        for eq_idx, node in enumerate(self.METHODS):
+            mod_idx = self.get_mod_idx(eq_idx)
+
+            # get flatten params for all variations
+            # # # #
+            # a b
+            # 1 2
+            variations, amount_params = self.extract_eq_variations(
+                mod_idx,
+                eq_idx,
+            )
 
             # transform shape along vertical ax
             # # # #
             # a 1
             # b 2
-            #variations = variations.T
-            print("variations", variations)
-            transformed = [[] for _ in range(amount_params)]
-            for i in range(amount_params):
-                for var in variations:
-                    transformed[i].append(var[i])
-            transformed = jnp.array(transformed)
+            transformed = jnp.transpose(variations, (1, 0, 2))
+            #print("transformed", transformed)
 
-            #
-            print("transformed", transformed)
+            transformed = self.short_transformed(
+                self.all_axs[eq_idx],
+                transformed,
+            )
+            #print("shortened transformed", transformed)
 
-            # get flatten params for all variations
-            # # # #
-            # a 1
-            # b 2
             flatten_transformed = []
-            for i, param_grid in enumerate(transformed):
+            for i, (param_grid, ax) in enumerate(
+                    zip(
+                        transformed,
+                        self.all_axs[eq_idx]
+                    )
+            ):
                 # problem: jax cant handle dynamic shapes...
                 # param_grid
+
                 single_param_grid = []
+
                 #print("param_grid", param_grid)
-                for coords in param_grid:
-                    #print("coords", coords)
-                    coord_result = self.db_layer.extract_flattened_grid(coords)
-                    print(f"coord_result for {i} {coords}", len(coord_result), coord_result)
+                if ax == 0:
+                    for coords in param_grid:
+                        #print("coords", coords)
+                        coord_result = self.db_layer.extract_flattened_grid(coords)
+                        #print(f"coord_result for {i} {coords}", len(coord_result))
+                        single_param_grid.extend(
+                            coord_result
+                        )
+                else:
+                    coord_result = self.db_layer.extract_flattened_grid(param_grid)
+                    #print(f"coord_result for {i} {param_grid}", len(coord_result))
                     single_param_grid.extend(
                         coord_result
                     )
+
                 #print("single_param_grid", single_param_grid, len(single_param_grid))
                 flatten_transformed.append(single_param_grid)
-             # transformed shapes [((60, 3), 60), ((60, 3), 60), ((60, 3), 60), ((60, 3), 60), ((60, 3), 60)]
-            #flatten_transformed [((1346,), 1346), ((1301,), 1301), ((1091,), 1091), ((1308,), 1308), ((1077,), 1077)]
 
-
-            #
             inputs = []
-            for shape, variation_grids in zip(all_shape, flatten_transformed):
+            for shape, variation_grids in zip(self.all_shapes[eq_idx], flatten_transformed):
                 #print("variation_grids", variation_grids)
                 result = bring_flat_to_shape(
                     jnp.array(variation_grids),
                     shape
                 )
+                result = jnp.array(result)
                 inputs.append(jnp.array(result))
-            print("inputs", [(jnp.array(r).shape, len(r)) for r in inputs])
 
             # calc single equation
-            features, results = node(
+            results = node(
                 grid=inputs,
-                in_axes_def=tuple(all_ax),
+                in_axes_def=tuple(self.all_axs[eq_idx]),
             )
 
-            print("features, results", features, results)
-
-            # append all features to history struct
-            jnp.stack([self.model_skeleton, features])
+            all_results.append(results)
+            all_ins.append(inputs)
 
         # todo sort values innto eq spec grids
-        self.db_layer.sort_results(all_results)
         jax.debug.print("calc_batch... done")
+        return all_ins, all_results
 
-
-
-
-    def shape_variations(self, variation_grids):
-        # todo build shape struct method based  meshgrid
-        return
-
-
-
-    def sort_features(self, eq_idx, all_features):
-        len_eq_variations = self.ITERATORS["eq_variations"][eq_idx]
-        start_idx = jnp.sum(self.ITERATORS["eq_variations"])[:eq_idx]
-
-        indices = jnp.array(start_idx+i for i in range(len_eq_variations))
-        # FEATURE -> MODEL
-        self.model_skeleton.at[
-            tuple(indices.T)
-        ].add(all_features)
 
 
 
@@ -301,11 +344,16 @@ class GNN:
         jax.debug.print("extract_eq_variations Mod {m} Eq {e}", m=mod_idx, e=eq_idx)
 
         variations = jnp.array(self.DB_CTL_VARIATION_LEN_PER_EQUATION)
+
+        # hier ansetzen
         params_per_eq = jnp.array(self.METHOD_PARAM_LEN_CTLR)
 
         # loop calc now * prev
         products = variations * params_per_eq
-        offsets = jnp.concatenate([jnp.array([0]), jnp.cumsum(products)])
+        offsets = jnp.concatenate([
+            jnp.array([0]),
+            jnp.cumsum(products)
+        ])
 
         start_sum = offsets[eq_idx]
         print("start_sum", start_sum)
@@ -319,10 +367,14 @@ class GNN:
         print("amount_params_current_eq", amount_params_current_eq)
 
         # get len of variations per equation
-        amount_variations_current_eq = jnp.take(jnp.array(self.DB_CTL_VARIATION_LEN_PER_EQUATION), eq_idx)
+        amount_variations_current_eq = jnp.take(
+            jnp.array(
+                self.DB_CTL_VARIATION_LEN_PER_EQUATION),
+            eq_idx
+        )
         print("amount_variations_current_eq", amount_variations_current_eq)
 
-        total_amount_params_current_eq = amount_params_current_eq * amount_variations_current_eq
+        total_amount_params_current_eq = jnp.int64(amount_params_current_eq * amount_variations_current_eq)
         print("total_amount_params_current_eq", total_amount_params_current_eq)
 
         # todo must multiply each item in self.DB_CTL_VARIATION_LEN_PER_EQUATION[:eq_idx] * amount_params for specific equation
@@ -330,18 +382,18 @@ class GNN:
             jnp.array(self.DB_TO_METHOD_EDGES),
             start_sum,
             total_amount_params_current_eq,
-            axis=0,
+            #axis=0,
         )
-        print("slice", slice)
+        #print("slice", slice)
 
         # Reshape in (num_chunks, n, len(inner_list))
         result = slice.reshape(
             total_amount_params_current_eq // amount_params_current_eq,
             amount_params_current_eq,
-            3
+            4,
         )
 
-        print("result", result)
+        #print("result", result)
         return result, amount_params_current_eq
 
 
@@ -349,12 +401,18 @@ class GNN:
     def build_gnn_equation_nodes(self):
         # create equation_nodes
         for eq_idx, eq in enumerate(self.METHODS):
-            node = Node(
-                runnable=create_runnable(
-                    eq_code=eq,
-                ),
-                #method_id=eq_idx,
+            print("convert to callable", eq)
+
+            runnable = create_runnable(
+                eq_code=eq
             )
+
+            debug_callable(runnable)
+
+            node = Node(
+                runnable=runnable
+            )
+
             # replace mehod str with py class
             self.METHODS[eq_idx] = node
 
@@ -420,3 +478,35 @@ class GNN:
         return sender, receiver
 
 
+
+
+    def sort_features(self, eq_idx, all_features):
+        len_eq_variations = self.ITERATORS["eq_variations"][eq_idx]
+        start_idx = jnp.sum(self.ITERATORS["eq_variations"])[:eq_idx]
+
+        indices = jnp.array(start_idx+i for i in range(len_eq_variations))
+        # FEATURE -> MODEL
+        self.model_skeleton.at[
+            tuple(indices.T)
+        ].add(all_features)
+
+
+    """
+    def _workflow(self):
+        model = [
+            # INJECTIOIN -> to get directly inj pattern (todo switch throguh db mapping)
+            # DB SCHEMA
+            self.db_layer.db_pattern,
+
+            # EDGE DB -> METHOD
+            self.method_struct,
+
+            # FEATURES
+            self.model_skeleton,
+
+            # FEATURE DB
+            self.def_out_db
+        ]
+
+        return model
+        """

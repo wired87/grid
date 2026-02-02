@@ -6,12 +6,13 @@ A high-performance, JAX/Flax-based simulation framework for modeling complex fie
 
 The engine follows a strict **Inject → Filter → Compute → Shift** cycle for each time step.
 
+# keep test_out.json as root
 
-
-## 🛠️ ToDos
-* create a field layer which inlcudes its own specific db (entire grid) (pros: targeted changes can be written without 
-touching/changing everything (jax array are immuatbale so when chngine jst 1 energy val, th entire grid needs to 
-be replaced.)) 
+## 🛠️ ToDos (please use Cursor for project nested todo sum)
+* add emergent behaviour based on time injections (blur less active behaviour: track this with FeatureEncoder.feature_history[:5] -> e.g. merge from
+*  debug the core 
+* classify parameters to dynamic(feature score based on time) and constant(never change) 
+* 
 
 
 ## 🛠️ Key Components

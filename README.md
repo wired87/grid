@@ -10,9 +10,9 @@ The engine follows a strict **Inject → Filter → Compute → Shift** cycle fo
 # keep test_out.json as root
 
 ## 🛠️ ToDos (please use Cursor for project nested todo sum)
-* add emergent behaviour based on time injections (blur less active behaviour: track this with FeatureEncoder.feature_history[:5] -> e.g. merge from
-*  debug the core 
-* classify parameters to dynamic(feature score based on time) and constant(never change) 
+* add emergent behaviour based on time injections (blur less active behaviour: track this with FeatureEncoder.feature_history[:5] -> e.g. merge from 
+* debug the core 
+* use time param value instead of hardcoded (based on time feature score) 
 * 
 
 

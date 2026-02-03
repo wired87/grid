@@ -1,7 +1,7 @@
 # JAX GNN Simulation Engine
 
 A high-performance, JAX/Flax-based simulation framework for modeling complex field dynamics ($t \to t+1$) on GPUs. 
-Focus on time evolution of single paranmeters 
+Focus on time evolution of interactants paranmeters
 
 ## � Structured Workflow
 

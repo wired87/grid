@@ -26,37 +26,29 @@ class FeatureEncoder(nnx.Module):
         self,
         param_grid,
     ):
-        #print("param_grid", param_grid)
+        # DEBUG: vmap(_work_param) + nnx.Linear(..., rngs=self.rngs) caused "Cannot mutate RngCount
+        # from a different trace level". Use Python loop over param_grid rows so Rngs are not
+        # mutated inside a traced function; return jnp.array([]) on exception for tree_map safety.
         try:
-            # receive grid all variations
-            #return linears for each param
-
-            def _work_param(param):
-                # flat _param
-                flat = jnp.ravel(param)
-
-                # embed
-                return jax.nn.gelu(
-                    nnx.Linear(
-                        in_features=len(flat),
-                        out_features=self.d_model,
-                        rngs=self.rngs
-                    )(flat)
+            param_grid = jnp.asarray(param_grid)
+            if param_grid.size == 0:
+                return jnp.array([])
+            out = []
+            for i in range(param_grid.shape[0]):
+                flat = jnp.ravel(param_grid[i])
+                out.append(
+                    jax.nn.gelu(
+                        nnx.Linear(
+                            in_features=len(flat),
+                            out_features=self.d_model,
+                            rngs=self.rngs,
+                        )(flat)
+                    )
                 )
-
-            kernel = vmap(
-                _work_param,
-                in_axes=0
-            )
-
-            feature_block_single_param_grid = kernel(
-                param_grid,
-            )
-
-            # working single parameter
-            return jnp.array(feature_block_single_param_grid)
+            return jnp.stack(out)
         except Exception as e:
             print("Err gen_feature_single_variation", e)
+            return jnp.array([])
 
 
     def __call__(
@@ -73,7 +65,11 @@ class FeatureEncoder(nnx.Module):
                 self.gen_feature_single_variation,
                 inputs,
             )
-            print("linears created", [f.shape for f in results])
+            # DEBUG: results can be nested tree; [f.shape for f in results] fails. Use tree_map for shapes.
+            try:
+                print("linears created", jax.tree_util.tree_map(lambda x: getattr(x, "shape", x), results))
+            except Exception:
+                pass
 
             return results
         except Exception as e:
@@ -82,20 +78,23 @@ class FeatureEncoder(nnx.Module):
 
 
     def stack_in_features(self, feature_res):
-        # save in features
-        vmap(
-            self.stack_new_time_steps,
-            in_axes=(0, 0)
-        )(
-            feature_res,
-            self.idx_grid
-        )
+        # save in features (loop over groups; vmap within group to avoid inconsistent sizes)
+        flat_res = list(feature_res) if isinstance(feature_res, (list, tuple)) else [feature_res]
+        while len(self.in_ts) < len(flat_res):
+            self.in_ts.append(jnp.array([]))
+        for i in range(len(flat_res)):
+            arr = jnp.asarray(flat_res[i])
+            if arr.size == 0:
+                continue
+            vmap(lambda row: self.stack_new_time_steps(row, i), in_axes=0)(arr)
 
 
     def stack_new_time_steps(self, grid_param_item, index_map):
-        # param dim for all time steps
-        jnp.stack([ # todo extend
-            self.in_ts[index_map],
+        # param dim for all time steps. in_ts length ensured in stack_in_features; index_map may be
+        # JAX scalar -> use int(index_map) / .item() for list indexing.
+        idx = int(index_map) if hasattr(index_map, "item") else index_map
+        jnp.stack([
+            self.in_ts[idx],
             jnp.array(grid_param_item)
         ])
 

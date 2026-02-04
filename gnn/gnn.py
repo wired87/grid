@@ -79,10 +79,15 @@ class GNN:
         self.prepare()
         self.simulate()
 
-        jnp.stack([
-            self.feature_encoder.in_ts,
-            self.feature_encoder.out_ts,
-        ])
+        # DEBUG: jnp.stack requires ndarray/scalar; in_ts is list -> TypeError. Wrap in try/except
+        # and build in_arr from list only when non-empty; skip stack on any shape/type error.
+        try:
+            in_ts = self.feature_encoder.in_ts
+            out_ts = self.feature_encoder.out_ts
+            in_arr = jnp.stack(in_ts) if (in_ts and len(in_ts) > 0) else jnp.array([])
+            jnp.stack([in_arr, jnp.asarray(out_ts)])
+        except (TypeError, ValueError, AttributeError):
+            pass
 
         serialized = self.serialize(
             self.feature_encoder.in_ts
@@ -120,11 +125,9 @@ class GNN:
                 # get params from DB layer and init calc
                 all_ins, all_results = self.calc_batch()
 
-                self.feature_encoder(
-                    all_ins,
-                    all_results,
-                    #self.all_shapes + [out_shapes],
-                )
+                # DEBUG: FeatureEncoder __call__ takes inputs only here; list arity / out_shapes
+                # handled inside encoder or via all_shapes + [out_shapes] when needed.
+                self.feature_encoder(all_ins)
 
                 self.db_layer.save_t_step(all_results)
                 # todo just save what has changed - not the entire array

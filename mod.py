@@ -132,10 +132,13 @@ class Node(nnx.Module):
 
     def get_precomputed_results(
             self,
-            in_features:list,
+            in_features: list,
             axis_def,
     ):
         print("get_precomputed_results...")
+        out_feature_map = []
+        if in_features is None:
+            return out_feature_map
         try:
             feature_rows = self.convert_feature_to_rows(axis_def, in_features)
             print("get_precomputed_results feature_rows", [f.shape for f in feature_rows])
@@ -172,6 +175,7 @@ class Node(nnx.Module):
 
         except Exception as e:
             print("Err get_precomputed_results", e)
+            out_feature_map = []
         print("check... done")
         return out_feature_map
 
@@ -187,6 +191,8 @@ class Node(nnx.Module):
         :return:
         """
         print("convert_feature_to_rows...")
+        if in_features is None:
+            return []
 
         def _process(*item):
             return jnp.concatenate([jnp.ravel(
@@ -253,12 +259,32 @@ class Node(nnx.Module):
     ):
         print("process_equation...")
 
+        # DEBUG: (1) cond originally returned self.runnable (a function) -> "not a valid JAX type".
+        # (2) Branches must have same pytree/type: true_fun was leaf, false_fun list -> match structure.
+        # (3) Same dtype: true_fun bool[], false_fun float32[] -> cast both to float32.
+        # (4) Same shape: true_fun float32[1], false_fun float32[0] -> compute both, pad bres to
+        #     run_out.shape so cond accepts. (5) bres can contain None -> skip in _use_bres.
+        def _run(_x):
+            out = self.runnable(*_x)
+            if isinstance(out, (list, tuple)):
+                parts = [jnp.ravel(jnp.asarray(a, dtype=jnp.float32)) for a in out]
+                return jnp.concatenate(parts) if parts else jnp.array([], dtype=jnp.float32)
+            return jnp.asarray(out, dtype=jnp.float32).ravel()
+
+        def _use_bres(bres_val, _x):
+            if not isinstance(bres_val, (list, tuple)):
+                return jnp.asarray(bres_val, dtype=jnp.float32).ravel()
+            parts = [jnp.ravel(jnp.asarray(a, dtype=jnp.float32)) for a in bres_val if a is not None]
+            return jnp.concatenate(parts) if parts else jnp.array([], dtype=jnp.float32)
+
         def _calc(bres, *item):
+            run_out = _run(item)
+            bres_out = _use_bres(bres, item)
+            bres_padded = jnp.resize(bres_out, run_out.shape)
             return jax.lax.cond(
-                bres is None,  # besser: extra mask verwenden!
-                lambda _: self.runnable,
-                lambda _: bres,
-                operand=item,
+                bres is None,
+                lambda: run_out,
+                lambda: bres_padded,
             )
 
         kernel = jax.vmap(

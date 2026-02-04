@@ -349,13 +349,17 @@ class DBLayer:
 
 
 
+        # DEBUG: vmap(step_results, METHOD_TO_DB) failed: "vmap got inconsistent sizes" (e.g. 1, 3, 72,
+        # 223). Per-equation results have different leading dims -> loop over equations; one update per eq.
+        # get_db_index expects 3 args (mod, field, param); coords may have 4 cols -> use coords[-3:].
+        # If an equation returns (array, list), take single array for DB write to avoid "list not valid JAX type".
         for i, res in enumerate(step_results):
             coords = self.METHOD_TO_DB[i]
             _start, _len = self.get_db_index(*jnp.array(coords)[-3:])
             res = step_results[i]
-
-            # equation may return single array or (array, list); DB write expects one array
-            self.nodes = jax.lax.dynamic_update_slice(self.nodes, res, _start)
+            arr = res[0] if isinstance(res, (list, tuple)) else res
+            start_tuple = (_start,) if jnp.ndim(_start) == 0 else tuple(int(x) for x in _start)
+            self.nodes = jax.lax.dynamic_update_slice(self.nodes, arr, start_tuple)
 
 
         jax.debug.print("sort_results... done")

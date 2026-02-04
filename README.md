@@ -3,7 +3,7 @@
 A high-performance, JAX/Flax-based simulation framework for modeling complex field dynamics ($t \to t+1$) on GPUs. 
 Focus on time evolution of interactants paranmeters
 
-This Pattern falls under the GNU 3.0 LICENSE
+"grid" falls under the GNU 3.0 LICENSE
 
 ## � Structured Workflow
 

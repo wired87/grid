@@ -47,8 +47,6 @@ class DBLayer:
         self.gpu = gpu
         self.DIMS=DIMS
 
-
-
         self.history_nodes = [] # Collects state over time
 
         self.FIELDS_CUMSUM = jnp.concatenate([
@@ -127,6 +125,7 @@ class DBLayer:
         jax.debug.print("build_db...")
 
         SCALED_DB = []
+        TIME_DB = []
         # get abs sum from each parameter for index
 
         # scale db nodes
@@ -153,6 +152,7 @@ class DBLayer:
                 )
 
                 SCALED_DB.extend(slice)
+                TIME_DB.append(jnp.array([slice]))
 
                 self.SCALED_PARAMS.append(
                     len(slice)
@@ -161,6 +161,8 @@ class DBLayer:
             else:
                 # const
                 SCALED_DB.extend(single_param_value)
+                TIME_DB.append(jnp.array([single_param_value]))
+
                 self.SCALED_PARAMS.append(len_unscaled_param)
 
         # scale nodes down db
@@ -180,10 +182,20 @@ class DBLayer:
             jnp.cumsum(self.DB_PARAM_CONTROLLER)
         ])
 
-        self.time_construct = jnp.array([
-            self.nodes,
-            self.nodes,
-        ])
+
+
+        self.tdb = jax.device_put(
+            TIME_DB,
+            self.gpu,
+        )
+
+
+        self.time_construct = jnp.array(
+            [
+                self.nodes,
+                self.nodes,
+            ]
+        )
 
         self.time_construct = jax.device_put(
             self.time_construct,
@@ -197,12 +209,37 @@ class DBLayer:
 
         jax.debug.print("build_db... done")
 
+
+    def build_history_db(self, all_results):
+
+        """
+        for padded_idx, unpadded_idx in zip(
+                self.SCALED_PARAMS_CUMSUM,
+                self.SCALED_PARAMS_CUMSUM_UNPADDED
+        ):
+        """
+
+
+
+
+
+
     def save_t_step(self, all_results):
         jax.debug.print(f"save_t_step...")
 
-        # save prev db
+        # save PREV DB
         self.time_construct = self.time_construct.at[1].set(self.nodes)
-        self.sort_results(all_results)
+
+
+        for i, (coord, result) in enumerate(zip(
+                self.METHOD_TO_DB,
+                all_results
+        )):
+            rel_idx = self.get_rel_db_index(*coord)
+            jnp.stack(self.tdb[rel_idx])
+
+        # SAVE RT DB
+        self.sort_results(all_results, result)
 
         # save now
         self.time_construct = self.time_construct.at[0].set(self.nodes)

@@ -1,10 +1,10 @@
 import os
 
-from google.auth.credentials import Credentials
-from google.oauth2 import service_account
+"""from google.auth.credentials import Credentials
+from google.oauth2 import service_account"""
 
 
-def load_service_account_credentials(file_path: str=None, scopes=None) -> Credentials:
+def load_service_account_credentials(file_path: str=None, scopes=None):
     """Loads a Service Account file into the universal Credentials object."""
 
     if file_path is None:

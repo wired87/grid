@@ -105,6 +105,7 @@ class Node(nnx.Module):
         # non pre-computed
         precomputed_results = self.get_precomputed_results(
             in_features,
+            in_axes_def
         )
 
         outs = self.process_equation(
@@ -132,21 +133,31 @@ class Node(nnx.Module):
     def get_precomputed_results(
             self,
             in_features:list,
+            axis_def,
     ):
         print("get_precomputed_results...")
         try:
-            # conv soa -> rows
-            feature_rows = jnp.stack(
-                jnp.array(in_features),
-                axis=1,
-            )
+            feature_rows = self.convert_feature_to_rows(axis_def, in_features)
             print("get_precomputed_results feature_rows", [f.shape for f in feature_rows])
 
+            # todo check from 2
             if len(self.feature_encoder.in_ts):
                 # past in features
-                past_feature_rows = jnp.stack(
-                    self.feature_encoder.in_ts,
-                    axis=1,
+                def _make(*grids):
+                    return self.convert_feature_to_rows(
+                        axis_def, grids
+                    )
+
+                past_feature_rows = vmap(
+                    _make,
+                    in_axes=(0,*axis_def)
+                )(
+                    *self.feature_encoder.in_ts
+                )
+                print("past_feature_rows created")
+                jnp.stack(
+                    past_feature_rows,
+                    axis=0,
                 )
 
                 out_feature_map = vmap(
@@ -158,11 +169,41 @@ class Node(nnx.Module):
                 )
             else:
                 out_feature_map = [None for _ in range(len(feature_rows))]
-            return out_feature_map
+
         except Exception as e:
             print("Err get_precomputed_results", e)
         print("check... done")
+        return out_feature_map
 
+
+
+
+    def convert_feature_to_rows(self, axis_def, in_features):
+        """
+
+        Etract flattened
+        :param axis_def:
+        :param in_features:
+        :return:
+        """
+        print("convert_feature_to_rows...")
+
+        def _process(*item):
+            return jnp.concatenate([jnp.ravel(
+                i,
+                ) for i in item],axis=0)
+
+        kernel = jax.vmap(
+            fun=_process,
+            in_axes=axis_def,
+        )
+
+        feature_rows = kernel(
+            *in_features
+        )
+
+        print("feature_rows shape", [f.shape for f in feature_rows])
+        return feature_rows
 
 
 
@@ -179,6 +220,7 @@ class Node(nnx.Module):
 
 
     def fill_blur_vals(self, embedding_current, prev_params):
+        print("fill_blur_vals...")
         embeddings = jnp.stack(prev_params, axis=0)      # (N, d_model)
 
         # L2-Distanz zu allen
@@ -202,32 +244,33 @@ class Node(nnx.Module):
             # -> MUST BE CALCED
             return None
 
+
     def process_equation(
             self,
             inputs,
             blur_results,
             in_axes_def,
     ):
-        #print("inputs", inputs)
+        print("process_equation...")
 
         def _calc(bres, *item):
-            # return either blur result or
-            # fresh calced
-            calc = bres == None
-            if calc:
-                return self.runnable(*item)
-            else:
-                return bres
+            return jax.lax.cond(
+                bres is None,  # besser: extra mask verwenden!
+                lambda _: self.runnable,
+                lambda _: bres,
+                operand=item,
+            )
 
         kernel = jax.vmap(
             fun=_calc,
-            in_axes=(0, *in_axes_def) #(0,0,None,None,None)
+            in_axes=(0, *in_axes_def)
         )
 
         result = kernel(
             blur_results,
             *inputs
         )
+        print("process_equation... done")
         return result, inputs
 
 
@@ -330,3 +373,33 @@ class Node(nnx.Module):
             )
         jax.debug.print("transform_feature... done")
         return feature_matrix_eq_tstep
+
+
+
+"""
+    def stack(self, axis_def, in_features):
+        print("stack...")
+
+        def _get_row(*items):
+            return [*items]
+
+        # Vmap über die Features
+        in_features = vmap(
+            _get_row,
+            in_axes=axis_def,
+        )(*in_features)
+
+        processed_features = [jnp.squeeze(jnp.array(f)) for f in in_features]
+
+        print("in_features (processed)", [f.shape for f in processed_features])
+
+        # Jetzt sind alle (36, 64) und können gestapelt werden
+        feature_rows = jnp.stack(
+            processed_features,
+            axis=1,
+        )
+
+        print("feature_rows shape", feature_rows.shape)
+        return feature_rows
+
+"""

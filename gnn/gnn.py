@@ -79,12 +79,11 @@ class GNN:
         self.prepare()
         self.simulate()
 
-        jnp.stack(
-            [
-                self.feature_encoder.in_ts,
-                self.feature_encoder.out_ts,
-            ]
-        )
+        jnp.stack([
+            self.feature_encoder.in_ts,
+            self.feature_encoder.out_ts,
+        ])
+
         serialized = self.serialize(
             self.feature_encoder.in_ts
         )
@@ -396,8 +395,9 @@ class GNN:
 
     def build_gnn_equation_nodes(self):
         # create equation_nodes
+        print("convert to callable...")
         for eq_idx, eq in enumerate(self.METHODS):
-            print("convert to callable", eq_idx)
+
 
             runnable = create_runnable(
                 eq_code=eq
@@ -409,7 +409,7 @@ class GNN:
 
             # replace mehod str with py class
             self.METHODS[eq_idx] = node
-
+        print("convert to callable... done")
 
     def serialize(self, data):
         import flax.serialization

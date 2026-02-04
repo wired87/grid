@@ -14,11 +14,14 @@ JAX/Flax simulation for field dynamics ($t \to t+1$). Uses **Inject â†’ Filter â
 
 ## TODOs
 
-- Emergent behaviour from time injections (e.g. blur inactive; use `FeatureEncoder.feature_history`).
-- Debug the core.
-- Classify params: **dynamic** (feature/time-dependent) vs **constant**.
-
-
+- Track energetic time distribution over time
+- Implement a blur to pre fill results based on in feature line (to not require calcualtion) -> Benedikt is on this
+- Time Iterator: The Model builds on time (There is no Room -> just time is what matters)
+- Implement total tiem step feature
 ---
+
+License:
+All money earned with it must be collected within the POT
+
 
 *Keep `test_out.json` at repo root. Use Cursor for nested todo rollup.*

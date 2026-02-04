@@ -6,15 +6,9 @@ from jax import vmap
 
 
 class Iterator:
-    """
-
-
-    """
 
     def __init__(self):
         pass
-
-
 
 
     def pattern_recall(

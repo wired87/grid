@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 
 
-def bring_flat_to_shape(lst, shape):
+"""def bring_flat_to_shape(lst, shape):
     lst = jnp.array(lst)
 
     # Sicherstellen, dass shape mindestens [1] ist, falls [] übergeben wurde
@@ -20,4 +20,19 @@ def bring_flat_to_shape(lst, shape):
     reshaped = trimmed.reshape((n_blocks, *shape))
     print("trgt shape", shape)
     return reshaped
+    
+"""
+
+
+def bring_flat_to_shape(lst, shape):
+    x = jnp.asarray(lst)
+
+    shape = shape or (1,)
+    block_size = int(jnp.prod(jnp.array(shape)))
+
+    n_blocks = x.size // block_size
+    x = x[: n_blocks * block_size]
+
+    return x.reshape((n_blocks, *shape))
+
 

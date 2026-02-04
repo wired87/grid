@@ -6,9 +6,9 @@ from flax import linen as nn
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from typing import Callable
+from jax import vmap
 
-
+from gnn.feature_encoder import FeatureEncoder
 from utils import SHIFT_DIRS, DIM
 
 def test(*args):
@@ -77,35 +77,94 @@ class Node(nnx.Module):
     learnable weights.
 
     calc -> generate gnn stuff -> paste to gnn_ds -> return None
-
+    todo check similar pre computed node
     """
 
     # Example parameter (weight) to be learned
     # Use nnx.Param for weights
-    def __init__(
-            self,
-            runnable: Callable,
-    ):
+    def __init__(self):
+        self.feature_encoder = FeatureEncoder()
         self.embedding_dim = 64
         self.runnable = test
+        self.param_blur = .99
+        self.result_blur = .01
 
     def __call__(
             self,
             grid,
             in_axes_def
     ):
-        results = []
-        #calculate new EQ step for all modules fields
-
         # patterns here is the nested tuple list for one pattern execution
-        outs = self.process_equation(
-            grid,
-            in_axes_def
+
+        # gen in featrues
+        in_features = self.feature_encoder(
+            inputs=grid
         )
 
-        # apply field result -> db
-        results.append(outs)
-        return results
+        # receive list with None vales for
+        # non pre-computed
+        precomputed_results = self.get_precomputed_results(
+            in_features,
+        )
+
+        outs = self.process_equation(
+            grid,
+            precomputed_results,
+            in_axes_def,
+        )
+
+
+
+        # save in features
+        self.feature_encoder.stack_in_features(
+            feature_res=in_features
+        )
+
+        # create featuure time step
+        feature_tstep = self.feature_encoder(
+            inputs=grid,
+            outputs=outs,
+        )
+
+        return outs, feature_tstep
+
+
+    def get_precomputed_results(
+            self,
+            in_features:list,
+    ):
+        print("get_precomputed_results...")
+        try:
+            # conv soa -> rows
+            feature_rows = jnp.stack(
+                jnp.array(in_features),
+                axis=1,
+            )
+            print("get_precomputed_results feature_rows", [f.shape for f in feature_rows])
+
+            if len(self.feature_encoder.in_ts):
+                # past in features
+                past_feature_rows = jnp.stack(
+                    self.feature_encoder.in_ts,
+                    axis=1,
+                )
+
+                out_feature_map = vmap(
+                    self.fill_blur_vals,
+                    in_axes=(0, None)
+                )(
+                    embedding_current=feature_rows,
+                    prev_params=past_feature_rows
+                )
+            else:
+                out_feature_map = [None for _ in range(len(feature_rows))]
+            return out_feature_map
+        except Exception as e:
+            print("Err get_precomputed_results", e)
+        print("check... done")
+
+
+
 
     def features(self, in_axes_def, inputs, input_shapes):
         kernel = jax.vmap(
@@ -119,22 +178,59 @@ class Node(nnx.Module):
 
 
 
+    def fill_blur_vals(self, embedding_current, prev_params):
+        embeddings = jnp.stack(prev_params, axis=0)      # (N, d_model)
+
+        # L2-Distanz zu allen
+        losses = jnp.linalg.norm(
+            embeddings -
+            embedding_current[None, :],
+            axis=1
+        )
+
+        # min entry returns idx (everythign is order based (fixed f-len)
+        idx = jnp.argmin(losses)
+        min_loss = losses[idx]
+
+        # -> PRE CALCULATED RESULT BASED ON BLUR
+        if min_loss <= self.result_blur:
+            return jnp.take(
+                self.feature_encoder.out_ts,
+                idx,
+            )
+        else:
+            # -> MUST BE CALCED
+            return None
 
     def process_equation(
             self,
             inputs,
+            blur_results,
             in_axes_def,
     ):
         #print("inputs", inputs)
+
+        def _calc(bres, *item):
+            # return either blur result or
+            # fresh calced
+            calc = bres == None
+            if calc:
+                return self.runnable(*item)
+            else:
+                return bres
+
         kernel = jax.vmap(
-            fun=self.runnable,
-            in_axes=in_axes_def #(0,0,None,None,None)
-        )
-        result = kernel(
-            *inputs
+            fun=_calc,
+            in_axes=(0, *in_axes_def) #(0,0,None,None,None)
         )
 
+        result = kernel(
+            blur_results,
+            *inputs
+        )
         return result, inputs
+
+
 
     def transform_feature(
             self,
@@ -177,6 +273,16 @@ class Node(nnx.Module):
 
             len_params_per_methods.append(param_grid)
         return len_params_per_methods
+
+
+
+
+
+
+
+
+
+
 
 
 

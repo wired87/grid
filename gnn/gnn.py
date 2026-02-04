@@ -10,17 +10,7 @@ from utils import SHIFT_DIRS, create_runnable, debug_callable
 from flax import nnx
 
 import jax.numpy as jnp
-"""
 
-Wir sortieren alles nach modul -> methods:
-methoden
-edges db def
-
-fehelr in:
-create_db 
-set edges 
-
-"""
 
 
 class GNN:
@@ -88,8 +78,15 @@ class GNN:
     def main(self):
         self.prepare()
         self.simulate()
+
+        jnp.stack(
+            [
+                self.feature_encoder.in_ts,
+                self.feature_encoder.out_ts,
+            ]
+        )
         serialized = self.serialize(
-            self.feature_encoder.feature_time_store
+            self.feature_encoder.in_ts
         )
         print("serialized model_skeleton", serialized)
 
@@ -124,11 +121,10 @@ class GNN:
                 # get params from DB layer and init calc
                 all_ins, all_results = self.calc_batch()
 
-                # generate model tstep
                 self.feature_encoder(
                     all_ins,
                     all_results,
-                    self.all_shapes,
+                    #self.all_shapes + [out_shapes],
                 )
 
                 self.db_layer.save_t_step(all_results)
@@ -204,10 +200,9 @@ class GNN:
     def step_0(self):
         print("step_0...")
         for eq_idx, node in enumerate(self.METHODS):
-            mod_idx = self.get_mod_idx(eq_idx)
+            #mod_idx = self.get_mod_idx(eq_idx)
 
             variations, amount_params = self.extract_eq_variations(
-                mod_idx,
                 eq_idx,
             )
 
@@ -262,7 +257,6 @@ class GNN:
             # a b
             # 1 2
             variations, amount_params = self.extract_eq_variations(
-                mod_idx,
                 eq_idx,
             )
 
@@ -281,10 +275,10 @@ class GNN:
 
             flatten_transformed = []
             for i, (param_grid, ax) in enumerate(
-                    zip(
-                        transformed,
-                        self.all_axs[eq_idx]
-                    )
+                zip(
+                    transformed,
+                    self.all_axs[eq_idx]
+                )
             ):
                 # problem: jax cant handle dynamic shapes...
                 # param_grid
@@ -310,6 +304,8 @@ class GNN:
                 #print("single_param_grid", single_param_grid, len(single_param_grid))
                 flatten_transformed.append(single_param_grid)
 
+
+            # reshape flattened collection
             inputs = []
             for shape, variation_grids in zip(self.all_shapes[eq_idx], flatten_transformed):
                 #print("variation_grids", variation_grids)
@@ -336,12 +332,12 @@ class GNN:
 
 
 
-    def extract_eq_variations(self, mod_idx, eq_idx):
+    def extract_eq_variations(self, eq_idx):
         """
         Extrahiert alle Variationen für ein spezifisches Gleichung.
         Navigiert durch DB und AXIS und skaliert Parameter bei axis == 0 auf amount_nodes.
         """
-        jax.debug.print("extract_eq_variations Mod {m} Eq {e}", m=mod_idx, e=eq_idx)
+        jax.debug.print("extract_eq_variations ")
 
         variations = jnp.array(self.DB_CTL_VARIATION_LEN_PER_EQUATION)
 
@@ -401,17 +397,15 @@ class GNN:
     def build_gnn_equation_nodes(self):
         # create equation_nodes
         for eq_idx, eq in enumerate(self.METHODS):
-            print("convert to callable", eq)
+            print("convert to callable", eq_idx)
 
             runnable = create_runnable(
                 eq_code=eq
             )
 
-            debug_callable(runnable)
+            #debug_callable(runnable)
 
-            node = Node(
-                runnable=runnable
-            )
+            node = Node()
 
             # replace mehod str with py class
             self.METHODS[eq_idx] = node
@@ -491,22 +485,31 @@ class GNN:
         ].add(all_features)
 
 
-    """
-    def _workflow(self):
-        model = [
-            # INJECTIOIN -> to get directly inj pattern (todo switch throguh db mapping)
-            # DB SCHEMA
-            self.db_layer.db_pattern,
+"""
+def _workflow(self):
+    model = [
+        # INJECTIOIN -> to get directly inj pattern (todo switch throguh db mapping)
+        # DB SCHEMA
+        self.db_layer.db_pattern,
 
-            # EDGE DB -> METHOD
-            self.method_struct,
+        # EDGE DB -> METHOD
+        self.method_struct,
 
-            # FEATURES
-            self.model_skeleton,
+        # FEATURES
+        self.model_skeleton,
 
-            # FEATURE DB
-            self.def_out_db
-        ]
+        # FEATURE DB
+        self.def_out_db
+    ]
 
-        return model
-        """
+    return model
+    
+
+# generate model tstep (shapes must match [*inputs, outputs] → 20 items)
+        def _shape_tree(x):
+            if isinstance(x, (list, tuple)):
+                return [_shape_tree(e) for e in x]
+            return getattr(x, "shape", x)
+        out_shapes = _shape_tree(all_results)
+
+"""

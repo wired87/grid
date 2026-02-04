@@ -255,34 +255,71 @@ class DBLayer:
         pass
 
 
+    def flat_item(
+            self,
+            coords,
+            item,
+    ):
+        _start, _len = self.get_db_index(
+            *jnp.array(coords)[-3:]
+        )
+        flat = jnp.ravel(item)
+        return flat
 
 
 
-    def sort_results(self, step_results):
+    def sort_results(
+            self,
+            step_results, # list[response
+    ):
         """
-        - save coords to paste vals
-
         # RESULT -> HISTORY DB todo: upsert directly to bq
         # todo: add param stacks on single eq layer
         n variations = n return
         """
         jax.debug.print("sort_results... ")
+        """nodes = self.nodes
 
-        def _update(res, coords):
-            _start, _len = self.get_db_index(*coords)
-            jax.lax.dynamic_update_slice(
-                self.nodes,
-                res,
-                _start,
+        def apply_one(
+                nodes,
+                payload
+        ):
+            coords, item = payload
+            flat = self.flat_item(
+                coords,
+                item,
             )
+            nodes = jax.lax.dynamic_update_slice(
+                nodes,
+                flat,
+                _start
+            )
+            return nodes, None
 
-        vmap(
-            _update,
-            in_axes=(0,0)
-        )(
-            step_results,
-            self.METHOD_TO_DB
+        nodes, _ = jax.lax.scan(
+            apply_one,
+            nodes,
+            (
+                self.METHOD_TO_DB,
+                step_results
+            )
         )
+        for i, res_grid in step_results:
+            
+        
+
+        self.nodes = nodes"""
+
+
+
+        for i, res in enumerate(step_results):
+            coords = self.METHOD_TO_DB[i]
+            _start, _len = self.get_db_index(*jnp.array(coords)[-3:])
+            res = step_results[i]
+
+            # equation may return single array or (array, list); DB write expects one array
+            self.nodes = jax.lax.dynamic_update_slice(self.nodes, res, _start)
+
 
         jax.debug.print("sort_results... done")
 
@@ -336,7 +373,8 @@ class DBLayer:
             jnp.where(
                 mask,
                 self.FIELDS,
-                0))
+                0
+            ))
 
         # get abs fiedld idx
         amount_fields += fidx
@@ -345,7 +383,8 @@ class DBLayer:
         indices = jnp.arange(len(self.AMOUNT_PARAMS_PER_FIELD))
         mask = indices < amount_fields
         amount_params_pre_fidx = jnp.sum(
-            jnp.where(mask, self.AMOUNT_PARAMS_PER_FIELD, 0))
+            jnp.where(mask, self.AMOUNT_PARAMS_PER_FIELD, 0
+                      ))
 
         # calc relative field idx to abs field idx sum
         abs_param_idx = amount_params_pre_fidx + pidx
@@ -363,15 +402,15 @@ class DBLayer:
     def get_abs_unscaled_db_idx(self, coord_struct_with_tdim):
         abs_unscaled_db_idx = []
         for coord in coord_struct_with_tdim:
-            print("coord", coord)
+            print(coord)
             coord_exclude_time = coord[1:]
-            print("coord_exclude_time", coord_exclude_time)
+            #print("coord_exclude_time", coord_exclude_time)
             db_idx = self.get_rel_db_index(*coord_exclude_time)
             abs_unscaled_db_idx.append(db_idx)
         return  abs_unscaled_db_idx
 
     def get_shapes(self, coords):
-        print("example_variation", coords)
+        print("get_shapes", coords)
         all_shape = []
 
         abs_un_idx = self.get_abs_unscaled_db_idx(coords)
@@ -385,7 +424,7 @@ class DBLayer:
 
 
     def get_axis_shape(self, example_variation):
-        print("example_variation", example_variation)
+        print("get_axis_shape", example_variation)
         all_ax = []
         all_shape = []
 

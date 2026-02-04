@@ -18,81 +18,108 @@ class FeatureEncoder(nnx.Module):
         # Wir speichern für jede Eingabe eine Projektion auf 64 Dimensionen
         self.rngs = nnx.Rngs(42)
         self.d_model = d_model
-        self.feature_time_store = []
+        self.in_ts = []
+        self.out_ts = jnp.array([])
 
 
     def gen_feature_single_variation(
         self,
         param_grid,
-        shape,
     ):
-        # receive grid all variations
-        #return linears for each param
-        def _work_param(param):
-            jax.nn.gelu(
-                nnx.Linear(
-                    in_features=shape,
-                    out_features=self.d_model,
-                    rngs=self.rngs
-                )(param)
+        #print("param_grid", param_grid)
+        try:
+            # receive grid all variations
+            #return linears for each param
+
+            def _work_param(param):
+                # flat _param
+                flat = jnp.ravel(param)
+
+                # embed
+                return jax.nn.gelu(
+                    nnx.Linear(
+                        in_features=len(flat),
+                        out_features=self.d_model,
+                        rngs=self.rngs
+                    )(flat)
+                )
+
+            kernel = vmap(
+                _work_param,
+                in_axes=0
             )
 
-        kernel = vmap(
-            _work_param,
-            in_axes=(0, None)
-        )
+            feature_block_single_param_grid = kernel(
+                param_grid,
+            )
 
-        feature_block_single_param_grid = kernel(
-            param_grid,
-            shape
-        )
+            # working single parameter
+            return jnp.array(feature_block_single_param_grid)
+        except Exception as e:
+            print("Err gen_feature_single_variation", e)
 
-        # working single parameter
-        return feature_block_single_param_grid
-
-
-    def gen_feature_batch(
-        self,
-        in_eq,
-        shapes
-    ):
-        # receive all ins and all outs for eq
-        kernel = vmap(
-            self.gen_feature_single_variation,
-            in_axes=(0, 0)
-        )
-
-        feature_block = kernel(
-            in_eq, # keep map vertical
-            shapes
-        )
-        return feature_block
 
     def __call__(
             self,
-            inputs: List[List[jax.Array]],
-            outputs,
-            shapes,
+            inputs: jnp.array,
     ):
         # todo include check fr prev time vals to
         print("FeatureEncoder.__call__...")
         try:
+            self.idx_grid = jnp.arange(len(inputs))
+
             #
             results = jax.tree_util.tree_map(
-                self.gen_feature_batch,
-                [inputs, outputs],
-                shapes,
+                self.gen_feature_single_variation,
+                inputs,
             )
+            print("linears created", [f.shape for f in results])
 
-            # flatten
-            self.model_skeleton = jnp.concatenate(
-                *results
+            return results
+        except Exception as e:
+            print("Err FeatureEncoder.__call__:", e)
+        print("FeatureEncoder.__call__... done")
+
+
+    def stack_in_features(self, feature_res):
+        # save in features
+        vmap(
+            self.stack_new_time_steps,
+            in_axes=(0, 0)
+        )(
+            feature_res,
+            self.idx_grid
+        )
+
+
+    def stack_new_time_steps(self, grid_param_item, index_map):
+        # param dim for all time steps
+        jnp.stack([ # todo extend
+            self.in_ts[index_map],
+            jnp.array(grid_param_item)
+        ])
+
+    def check_feature(self):
+        pass
+
+
+
+    def out_processor(
+            self,
+            output
+    ):
+        # todo include check fr prev time vals to
+        print("FeatureEncoder.__call__...")
+        try:
+            # calc features
+            results = self.gen_feature_single_variation(
+                output
             )
 
             # save model tstep
             jnp.stack([
-                self.feature_time_store,
-                self.model_skeleton
+                self.out_ts,
+                jnp.array(results)
             ])
         except Exception as e:
             print("Err FeatureEncoder.__call__:", e)
@@ -100,4 +127,23 @@ class FeatureEncoder(nnx.Module):
 
 
 
+"""
 
+def gen_feature_batch(
+    self,
+    eq_in_out_grids,
+    #shapes
+):
+    print("gen_feature_batch...")
+    try:
+        flatten_grid = []
+        # receive all ins and all outs for eq
+        for item in eq_in_out_grids:
+            result = self.gen_feature_single_variation(item)
+            flatten_grid.append(result)
+        return flatten_grid
+    except Exception as e:
+        print("Err gen_feature_batch", e)
+    print("gen_feature_batch... done")
+
+"""

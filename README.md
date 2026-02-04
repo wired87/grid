@@ -1,7 +1,6 @@
 # JAX GNN Simulation Engine
 
-A high-performance, JAX/Flax-based simulation framework for modeling complex field dynamics ($t \to t+1$) on GPUs. 
-Focus on time evolution of parameter level.
+A high-performance, JAX/Flax-based simulation framework for modeling complex field dynamics ($t \to t+1$) on GPUs with focus on parameter level time evolution.
 
 "grid" falls under the GNU 3.0 LICENSE
 

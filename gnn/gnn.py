@@ -63,6 +63,24 @@ class GNN:
 
         print("Node initialized and build successfully")
 
+
+
+
+
+    def main(self):
+        self.prepare()
+        self.simulate()
+
+        serialized = self.serialize(
+            self.feature_encoder.in_ts
+        )
+        print("serialized model_skeleton", serialized)
+
+        jax.debug.print("process finished.")
+
+
+
+
     def prepare(self):
         self.build_gnn_equation_nodes()
 
@@ -75,32 +93,6 @@ class GNN:
         self.step_0()
 
 
-    def main(self):
-        self.prepare()
-        self.simulate()
-
-        # DEBUG: jnp.stack requires ndarray/scalar; in_ts is list -> TypeError. Wrap in try/except
-        # and build in_arr from list only when non-empty; skip stack on any shape/type error.
-        try:
-            in_ts = self.feature_encoder.in_ts
-            out_ts = self.feature_encoder.out_ts
-            in_arr = jnp.stack(in_ts) if (in_ts and len(in_ts) > 0) else jnp.array([])
-            jnp.stack([in_arr, jnp.asarray(out_ts)])
-        except (TypeError, ValueError, AttributeError):
-            pass
-
-        serialized = self.serialize(
-            self.feature_encoder.in_ts
-        )
-        print("serialized model_skeleton", serialized)
-
-        jax.debug.print("process finished.")
-
-
-
-
-
-
     def simulate(self):
         try:
             for step in range(self.time):
@@ -110,24 +102,11 @@ class GNN:
                     n=self.time
                 )
 
-                """
-                
-                if step in self.injector.time:
-                    # apply injections inside db layer
-                    self.injector.inject(
-                        idx=self.injector.time.index(step),
-                        step=step,
-                        db_layer=self.db_layer
-                    )
-                
-                """
-
                 # get params from DB layer and init calc
                 all_ins, all_results = self.calc_batch()
 
                 # DEBUG: FeatureEncoder __call__ takes inputs only here; list arity / out_shapes
                 # handled inside encoder or via all_shapes + [out_shapes] when needed.
-                self.feature_encoder(all_ins)
 
                 self.db_layer.save_t_step(all_results)
                 # todo just save what has changed - not the entire array
@@ -138,7 +117,6 @@ class GNN:
             "t={n}... done",
             n=self.time
         )
-
 
 
     @jit
@@ -252,7 +230,7 @@ class GNN:
         # START LOOP
         node: Node
         for eq_idx, node in enumerate(self.METHODS):
-            mod_idx = self.get_mod_idx(eq_idx)
+            #mod_idx = self.get_mod_idx(eq_idx)
 
             # get flatten params for all variations
             # # # #
@@ -275,48 +253,12 @@ class GNN:
             )
             #print("shortened transformed", transformed)
 
-            flatten_transformed = []
-            for i, (param_grid, ax) in enumerate(
-                zip(
-                    transformed,
-                    self.all_axs[eq_idx]
-                )
-            ):
-                # problem: jax cant handle dynamic shapes...
-                # param_grid
-
-                single_param_grid = []
-
-                #print("param_grid", param_grid)
-                if ax == 0:
-                    for coords in param_grid:
-                        #print("coords", coords)
-                        coord_result = self.db_layer.extract_flattened_grid(coords)
-                        #print(f"coord_result for {i} {coords}", len(coord_result))
-                        single_param_grid.extend(
-                            coord_result
-                        )
-                else:
-                    coord_result = self.db_layer.extract_flattened_grid(param_grid)
-                    #print(f"coord_result for {i} {param_grid}", len(coord_result))
-                    single_param_grid.extend(
-                        coord_result
-                    )
-
-                #print("single_param_grid", single_param_grid, len(single_param_grid))
-                flatten_transformed.append(single_param_grid)
-
-
+            flatten_transformed = self.flatten_transformed_coords(
+                eq_idx,
+                transformed
+            )
             # reshape flattened collection
-            inputs = []
-            for shape, variation_grids in zip(self.all_shapes[eq_idx], flatten_transformed):
-                #print("variation_grids", variation_grids)
-                result = bring_flat_to_shape(
-                    jnp.array(variation_grids),
-                    shape
-                )
-                result = jnp.array(result)
-                inputs.append(jnp.array(result))
+            inputs = self.shape_input(eq_idx, flatten_transformed)
 
             # calc single equation
             results = node(
@@ -324,7 +266,7 @@ class GNN:
                 in_axes_def=tuple(self.all_axs[eq_idx]),
             )
 
-            all_results.append(results)
+            all_results.extend(results)
             all_ins.append(inputs)
 
         # todo sort values innto eq spec grids
@@ -332,7 +274,50 @@ class GNN:
         return all_ins, all_results
 
 
+    def flatten_transformed_coords(self, eq_idx, transformed):
+        flatten_transformed = []
+        for i, (param_grid, ax) in enumerate(
+                zip(
+                    transformed,
+                    self.all_axs[eq_idx]
+                )
+        ):
+            # problem: jax cant handle dynamic shapes...
+            # param_grid
 
+            single_param_grid = []
+
+            # print("param_grid", param_grid)
+            if ax == 0:
+                for coords in param_grid:
+                    # print("coords", coords)
+                    coord_result = self.db_layer.extract_flattened_grid(coords)
+                    # print(f"coord_result for {i} {coords}", len(coord_result))
+                    single_param_grid.extend(
+                        coord_result
+                    )
+            else:
+                coord_result = self.db_layer.extract_flattened_grid(param_grid)
+                # print(f"coord_result for {i} {param_grid}", len(coord_result))
+                single_param_grid.extend(
+                    coord_result
+                )
+
+            # print("single_param_grid", single_param_grid, len(single_param_grid))
+            flatten_transformed.append(single_param_grid)
+        return flatten_transformed
+
+    def shape_input(self, eq_idx, flatten_transformed):
+        inputs = []
+        for shape, variation_grids in zip(self.all_shapes[eq_idx], flatten_transformed):
+            # print("variation_grids", variation_grids)
+            result = bring_flat_to_shape(
+                jnp.array(variation_grids),
+                shape
+            )
+            result = jnp.array(result)
+            inputs.append(jnp.array(result))
+        return input
 
     def extract_eq_variations(self, eq_idx):
         """
@@ -354,7 +339,7 @@ class GNN:
         ])
 
         start_sum = offsets[eq_idx]
-        print("start_sum", start_sum)
+        #print("start_sum", start_sum)
 
         # amount params per eq
         #amount_params_current_eq = self.METHOD_PARAM_LEN_CTLR[eq_idx]
@@ -362,7 +347,7 @@ class GNN:
             jnp.array(self.METHOD_PARAM_LEN_CTLR),
             eq_idx,
         )
-        print("amount_params_current_eq", amount_params_current_eq)
+        #print("amount_params_current_eq", amount_params_current_eq)
 
         # get len of variations per equation
         amount_variations_current_eq = jnp.take(
@@ -370,10 +355,10 @@ class GNN:
                 self.DB_CTL_VARIATION_LEN_PER_EQUATION),
             eq_idx
         )
-        print("amount_variations_current_eq", amount_variations_current_eq)
+        #print("amount_variations_current_eq", amount_variations_current_eq)
 
         total_amount_params_current_eq = jnp.int64(amount_params_current_eq * amount_variations_current_eq)
-        print("total_amount_params_current_eq", total_amount_params_current_eq)
+        #print("total_amount_params_current_eq", total_amount_params_current_eq)
 
         # todo must multiply each item in self.DB_CTL_VARIATION_LEN_PER_EQUATION[:eq_idx] * amount_params for specific equation
         slice = jax.lax.dynamic_slice_in_dim(
@@ -401,14 +386,17 @@ class GNN:
         print("convert to callable...")
         for eq_idx, eq in enumerate(self.METHODS):
 
-
             runnable = create_runnable(
                 eq_code=eq
             )
 
-            #debug_callable(runnable)
 
-            node = Node()
+            node = Node(
+                runnable,
+                amount_variations=len(
+                    self.LEN_FEATURES_PER_EQ[eq_idx]
+                )
+            )
 
             # replace mehod str with py class
             self.METHODS[eq_idx] = node

@@ -82,23 +82,39 @@ class Node(nnx.Module):
 
     # Example parameter (weight) to be learned
     # Use nnx.Param for weights
-    def __init__(self):
-        self.feature_encoder = FeatureEncoder()
+    def __init__(
+            self,
+            runnable=test,
+            amount_variations=0,
+    ):
+        #
+        self.feature_encoder = FeatureEncoder(
+            amount_variations
+        )
         self.embedding_dim = 64
         self.runnable = test
         self.param_blur = .99
         self.result_blur = .01
+        self.amount_variations = amount_variations
+
+
+
+
 
     def __call__(
             self,
             grid,
-            in_axes_def
+            in_axes_def,
+            t=0
     ):
         # patterns here is the nested tuple list for one pattern execution
 
         # gen in featrues
-        in_features = self.feature_encoder(
-            inputs=grid
+        in_features = self.feature_encoder.create_features(
+            inputs=grid,
+            axis_def=in_axes_def,
+            time=t,
+            param_idx=0
         )
 
         # receive list with None vales for
@@ -114,20 +130,13 @@ class Node(nnx.Module):
             in_axes_def,
         )
 
-
-
-        # save in features
-        self.feature_encoder.stack_in_features(
-            feature_res=in_features
+        out_features = self.feature_encoder.create_features(
+            inputs=[outs], # wrap for tree uniform handling
+            axis_def=(0), # vmappable
+            time=t,
+            param_idx=-1 # outs altimes last entry
         )
-
-        # create featuure time step
-        feature_tstep = self.feature_encoder(
-            inputs=grid,
-            outputs=outs,
-        )
-
-        return outs, feature_tstep
+        return outs, in_features, out_features
 
 
     def get_precomputed_results(
@@ -141,7 +150,7 @@ class Node(nnx.Module):
             return out_feature_map
         try:
             feature_rows = self.convert_feature_to_rows(axis_def, in_features)
-            print("get_precomputed_results feature_rows", [f.shape for f in feature_rows])
+            #print("get_precomputed_results feature_rows", [f.shape for f in feature_rows])
 
             # todo check from 2
             if len(self.feature_encoder.in_ts):
@@ -157,7 +166,9 @@ class Node(nnx.Module):
                 )(
                     *self.feature_encoder.in_ts
                 )
+
                 print("past_feature_rows created")
+
                 jnp.stack(
                     past_feature_rows,
                     axis=0,
@@ -208,7 +219,7 @@ class Node(nnx.Module):
             *in_features
         )
 
-        print("feature_rows shape", [f.shape for f in feature_rows])
+        #print("feature_rows shape", [f.shape for f in feature_rows])
         return feature_rows
 
 

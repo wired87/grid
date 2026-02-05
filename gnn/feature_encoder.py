@@ -1,5 +1,3 @@
-from typing import List
-
 import jax
 from jax import vmap
 from flax import nnx
@@ -9,97 +7,141 @@ import jax.numpy as jnp
 class FeatureEncoder(nnx.Module):
     def __init__(
             self,
+            amount_variations:int,
             d_model: int = 64,
     ):
-        """
-        Erstellt für jede unterschiedliche Input-Shape einen eigenen Linear-Layer.
-        """
-
         # Wir speichern für jede Eingabe eine Projektion auf 64 Dimensionen
         self.rngs = nnx.Rngs(42)
         self.d_model = d_model
         self.in_ts = []
+        self.amount_variations = amount_variations
         self.out_ts = jnp.array([])
 
+        #
+        self.skeleton = jnp.array([])
+        self.store = []
 
     def gen_feature_single_variation(
         self,
         param_grid,
+        ax,
+        skeleton_idx:int,
     ):
-        # DEBUG: vmap(_work_param) + nnx.Linear(..., rngs=self.rngs) caused "Cannot mutate RngCount
-        # from a different trace level". Use Python loop over param_grid rows so Rngs are not
-        # mutated inside a traced function; return jnp.array([]) on exception for tree_map safety.
+        print("gen_feature_single_variation...")
+
+        def _work_param(linear_instance, param):
+            # flat _param
+            flat = jnp.ravel(param)
+
+            # embed
+            return jax.nn.gelu(
+                linear_instance(flat)
+            )
+
         try:
-            param_grid = jnp.asarray(param_grid)
-            if param_grid.size == 0:
-                return jnp.array([])
-            out = []
-            for i in range(param_grid.shape[0]):
-                flat = jnp.ravel(param_grid[i])
-                out.append(
-                    jax.nn.gelu(
-                        nnx.Linear(
-                            in_features=len(flat),
-                            out_features=self.d_model,
-                            rngs=self.rngs,
-                        )(flat)
-                    )
-                )
-            return jnp.stack(out)
+            kernel = vmap(
+                _work_param,
+                in_axes=(ax)
+            )
+
+            feature_block_single_param_grid = kernel(
+                param_grid,
+                self.skeleton[skeleton_idx]
+            )
+
+            # working single parameter
+            features = jnp.array(feature_block_single_param_grid)
+
+            # save features
+            self._save(features)
+
+            # finished
+            return features
         except Exception as e:
             print("Err gen_feature_single_variation", e)
-            return jnp.array([])
+        print("gen_feature_single_variation... done")
 
 
-    def __call__(
-            self,
-            inputs: jnp.array,
+
+
+
+
+
+    def create_features(
+            self, inputs, axis_def, time, param_idx=0
     ):
-        # todo include check fr prev time vals to
-        print("FeatureEncoder.__call__...")
         try:
-            self.idx_grid = jnp.arange(len(inputs))
+            jax.lax.cond(
+                time == 0,
+                lambda: self.build_model_skeleton(
+                    param_idx=param_idx
+                ),
+                lambda: print("pass"),
+            )
 
-            #
             results = jax.tree_util.tree_map(
                 self.gen_feature_single_variation,
-                inputs,
+                inputs,axis_def
             )
-            # DEBUG: results can be nested tree; [f.shape for f in results] fails. Use tree_map for shapes.
-            try:
-                print("linears created", jax.tree_util.tree_map(lambda x: getattr(x, "shape", x), results))
-            except Exception:
-                pass
+
+
+
 
             return results
         except Exception as e:
-            print("Err FeatureEncoder.__call__:", e)
-        print("FeatureEncoder.__call__... done")
+            print("Err create_in_features:", e)
 
 
-    def stack_in_features(self, feature_res):
-        # save in features (loop over groups; vmap within group to avoid inconsistent sizes)
-        flat_res = list(feature_res) if isinstance(feature_res, (list, tuple)) else [feature_res]
-        while len(self.in_ts) < len(flat_res):
-            self.in_ts.append(jnp.array([]))
-        for i in range(len(flat_res)):
-            arr = jnp.asarray(flat_res[i])
-            if arr.size == 0:
-                continue
-            vmap(lambda row: self.stack_new_time_steps(row, i), in_axes=0)(arr)
 
-
-    def stack_new_time_steps(self, grid_param_item, index_map):
-        # param dim for all time steps. in_ts length ensured in stack_in_features; index_map may be
-        # JAX scalar -> use int(index_map) / .item() for list indexing.
-        idx = int(index_map) if hasattr(index_map, "item") else index_map
-        jnp.stack([
-            self.in_ts[idx],
-            jnp.array(grid_param_item)
-        ])
-
-    def check_feature(self):
+    def _save(self, features:jnp.array):
         pass
+
+
+
+
+
+
+    def build_model_skeleton(self, param_idx):
+        print("build_model_skeleton...")
+
+        def build_in_skeleton(item):
+            print("define model in skeleton")
+            self.skeleton = [
+                [
+                    nnx.Linear(
+                        in_features=len(_item),
+                        out_features=self.d_model,
+                        rngs=self.rngs
+                    )
+                    for _ in range(self.amount_variations)
+                ]
+                for _item in item
+            ]
+            self.store=[[] for _ in range(len(item))]
+
+        def build_out_skeleton(item):
+            print("define model in skeleton")
+            out_skeleton = [
+                nnx.Linear(
+                    in_features=len(item),
+                    out_features=self.d_model,
+                    rngs=self.rngs
+                )
+                for _ in range(self.amount_variations)
+            ]
+            # add last element
+            self.skeleton.at[-1].add(out_skeleton)
+            self.store.append([])  # to store feeatures in
+
+        jax.lax.cond(
+            param_idx != -1,
+            lambda: build_in_skeleton,
+            lambda: build_out_skeleton,
+        )
+        print("build_model_skeleton... done")
+
+
+
 
 
 
@@ -108,11 +150,24 @@ class FeatureEncoder(nnx.Module):
             output
     ):
         # todo include check fr prev time vals to
-        print("FeatureEncoder.__call__...")
+        print("FeatureEncoder.out_processor...")
         try:
+
+            # check build out skeleton
+            jax.lax.cond(
+                len(self.out_skeleton) == 0,
+                lambda: self.build_out_skeleton(
+                    item=jax.tree_util.tree_map(
+                        lambda x: x[0], output
+                    )
+                ),
+                lambda: print("pass"),
+            )
+
             # calc features
             results = self.gen_feature_single_variation(
-                output
+                output,
+                ax=0,
             )
 
             # save model tstep
@@ -121,9 +176,8 @@ class FeatureEncoder(nnx.Module):
                 jnp.array(results)
             ])
         except Exception as e:
-            print("Err FeatureEncoder.__call__:", e)
-        print("FeatureEncoder.__call__... done")
-
+            print("Err FeatureEncoder.out_processor:", e)
+        print("FeatureEncoder.out_processor... done")
 
 
 """

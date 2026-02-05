@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from jax import jit, vmap
+from jax import jit, vmap, lax
 
 from dtypes import TimeMap
 
@@ -22,7 +22,10 @@ class DBLayer:
             DB_PARAM_CONTROLLER,
             DIMS,
             FIELDS,
+            DB_CTL_VARIATION_LEN_PER_FIELD,
+            LEN_FEATURES_PER_EQ,
             **cfg
+
     ):
         # DB Load and parse
         self.DB = DB
@@ -41,8 +44,13 @@ class DBLayer:
         self.DB_TO_METHOD_EDGES = jnp.array(DB_TO_METHOD_EDGES)
 
         # convert bytes array
-
         self.SCALED_PARAMS:list[int] = []
+        self.DB_CTL_VARIATION_LEN_PER_FIELD = jnp.array(DB_CTL_VARIATION_LEN_PER_FIELD)
+
+
+
+        self.LEN_FEATURES_PER_EQ=LEN_FEATURES_PER_EQ
+
 
         self.gpu = gpu
         self.DIMS=DIMS
@@ -54,11 +62,13 @@ class DBLayer:
             jnp.cumsum(jnp.array(self.FIELDS))
         ])
 
+
         # Dasselbe für die unskalierten Indizes, falls nötig
         self.AMOUNT_PARAMS_PER_FIELD_CUMSUM = jnp.concatenate([
             jnp.array([0]),
             jnp.cumsum(self.AMOUNT_PARAMS_PER_FIELD)
         ])
+
 
         # Dasselbe für die unskalierten Indizes, falls nötig
         self.DB_PARAM_CONTROLLER_CUMSUM = jnp.concatenate([
@@ -71,53 +81,8 @@ class DBLayer:
 
 
 
-    def check2(self):
-        # Nutze ein Set aus Tuples für den Vergleich,
-        # da man JAX-Arrays nicht direkt in Listen suchen kann.
-        worked_cords = set()
-        print("DB", self.DB.tolist())
-        print("self.nodes", self.nodes.tolist())
-        print("p ctlr unscaled", self.DB_PARAM_CONTROLLER.tolist(), len(self.DB_PARAM_CONTROLLER.tolist()))
-        print("p ctlr scaled", jnp.array(self.SCALED_PARAMS).tolist(), len(jnp.array(self.SCALED_PARAMS).tolist()))
 
-        for coords in self.DB_TO_METHOD_EDGES:
-            # 1. Konvertiere das Array in ein Python-Tuple
-            c_tuple = tuple(coords.tolist())
 
-            # 2. Prüfe, ob dieses Tuple bereits bearbeitet wurde
-            if c_tuple in worked_cords:
-                continue
-
-            # 3. Markiere es als bearbeitet
-            worked_cords.add(c_tuple)
-
-            # Restlicher Code bleibt gleich, aber wir nutzen *coords (entpacktes Array)
-            abs_unscaled_param_idx = self.get_rel_db_index(*coords)
-
-            param_start = self.DB_PARAM_CONTROLLER_CUMSUM[abs_unscaled_param_idx]
-            param_len = self.DB_PARAM_CONTROLLER[abs_unscaled_param_idx]
-
-            single_param_value = jax.lax.dynamic_slice_in_dim(
-                self.nodes,
-                param_start,
-                param_len,
-            )
-
-            abs_param_start_idx, slice_len = self.get_db_index(
-                *coords
-            )
-
-            scaled_param_value = jax.lax.dynamic_slice_in_dim(
-                self.nodes,
-                abs_param_start_idx,
-                slice_len
-            )
-
-            print(f"{coords}")
-            print("unscaled param value:", param_start, param_len, single_param_value)
-            print("scaled param value:", abs_param_start_idx, slice_len, scaled_param_value)
-            print("axis param :", self.AXIS[abs_unscaled_param_idx])
-            print("axis param index:", abs_unscaled_param_idx)
 
 
     def build_db(self, amount_nodes):
@@ -129,41 +94,46 @@ class DBLayer:
         # get abs sum from each parameter for index
 
         # scale db nodes
-        for i, ax in enumerate(self.AXIS):
-            start_param_count = jnp.take(
-                self.DB_PARAM_CONTROLLER_CUMSUM,
-                i,
-            )
-
-            len_unscaled_param = jnp.int64(
-                self.DB_PARAM_CONTROLLER[i]
-            )
-
-            single_param_value = jax.lax.dynamic_slice_in_dim(
-                self.DB,
-                start_param_count,
-                len_unscaled_param,
-            )
-
-            if ax == 0:
-                slice = jnp.tile(
-                    single_param_value,
-                    amount_nodes*self.DIMS
+        try:
+            for i, ax in enumerate(self.AXIS):
+                start_param_count = jnp.take(
+                    self.DB_PARAM_CONTROLLER_CUMSUM,
+                    i,
                 )
 
-                SCALED_DB.extend(slice)
-                TIME_DB.append(jnp.array([slice]))
-
-                self.SCALED_PARAMS.append(
-                    len(slice)
+                len_unscaled_param = jnp.int64(
+                    self.DB_PARAM_CONTROLLER[i]
                 )
 
-            else:
-                # const
-                SCALED_DB.extend(single_param_value)
-                TIME_DB.append(jnp.array([single_param_value]))
+                single_param_value = jax.lax.dynamic_slice_in_dim(
+                    self.DB,
+                    start_param_count,
+                    len_unscaled_param,
+                )
 
-                self.SCALED_PARAMS.append(len_unscaled_param)
+                if ax == 0:
+                    slice = jnp.tile(
+                        single_param_value,
+                        amount_nodes*self.DIMS
+                    )
+
+                    SCALED_DB.extend(slice)
+                    TIME_DB.append(jnp.array([slice]))
+
+                    self.SCALED_PARAMS.append(
+                        len(slice)
+                    )
+
+                else:
+                    # const
+                    SCALED_DB.extend(single_param_value)
+                    TIME_DB.append(jnp.array([single_param_value]))
+
+                    self.SCALED_PARAMS.append(len_unscaled_param)
+        except Exception as e:
+            print("Err build_db", e)
+
+
 
         # scale nodes down db
         self.nodes = jnp.array(SCALED_DB, dtype=jnp.complex64)
@@ -205,47 +175,104 @@ class DBLayer:
         self.OUT_SHAPES = self.get_shapes(
             coords=self.METHOD_TO_DB
         )
-
-
         jax.debug.print("build_db... done")
 
 
-    def build_history_db(self, all_results):
-
+    def stack_tdb(self, sumed_results):
+        print("stack_tdb...")
+        # append new items to tdb which gets upserted to bq after finished sim
+        """"
+        receive nested sumed structures
+        vmap m2db
+        group arrays receive out
+        paste vals
+        overwrite 
         """
-        for padded_idx, unpadded_idx in zip(
-                self.SCALED_PARAMS_CUMSUM,
-                self.SCALED_PARAMS_CUMSUM_UNPADDED
-        ):
-        """
+
+        def get_rel_db_idx(coord):
+            rel_idx = self.get_rel_db_index(
+                *coord[-3:]
+            )
+            return rel_idx
+
+        def stack_tstep(arr, val):
+            return jnp.stack([arr, val], axis=0)
+
+
+        def extract_out_arrays(idx) -> jnp.array:
+            return self.tdb[idx]
+
+        try:
+            # change dest
+            idx_map = vmap(
+                get_rel_db_idx,
+                in_axes=(0,0)
+            )(
+                self.METHOD_TO_DB,
+            )
+
+            #
+            arrays = vmap(
+                extract_out_arrays,
+                in_axes=0,
+            )(
+                idx_map
+            )
+
+            arrays = vmap(
+                stack_tstep,
+                in_axes=(0,0)
+            )(
+                arrays, sumed_results,
+            )
+
+            # apply change
+            def _sort(node, cary):
+                arr, idx = cary
+                node[idx] = arr
+                return node, None
+
+            self.tdb, _ = lax.scan(
+                _sort,
+                self.tdb,
+                (arrays, idx_map)
+            )
 
 
 
-
-
+            print("stack_tdb... done")
+        except Exception as e:
+            print("Err stack_tdb", e)
 
     def save_t_step(self, all_results):
-        jax.debug.print(f"save_t_step...")
+        try:
+            jax.debug.print(f"save_t_step...")
 
-        # save PREV DB
-        self.time_construct = self.time_construct.at[1].set(self.nodes)
+            #
+            all_results = self.flatten_result(all_results)
 
+            # sum field variations
+            sumed_results = self.sum_results(all_results)
 
-        for i, (coord, result) in enumerate(zip(
-                self.METHOD_TO_DB,
-                all_results
-        )):
-            rel_idx = self.get_rel_db_index(*coord)
-            jnp.stack(self.tdb[rel_idx])
+            # save NOW db in PREV db
+            self.time_construct = self.time_construct.at[1].set(
+                self.time_construct[0]
+            )
 
-        # SAVE RT DB
-        self.sort_results(all_results, result)
+            #
 
-        # save now
-        self.time_construct = self.time_construct.at[0].set(self.nodes)
+            self.stack_tdb(sumed_results)
 
-        #
-        jax.debug.print(f"save_t_step... done")
+            # SAVE RT DB (sort_results_rtdb takes step_results only)
+            # edge m->db jsut takes here account
+            self.sort_results_rtdb(sumed_results)
+
+            # save new nodes (updated in sort) in db construct
+            self.time_construct = self.time_construct.at[0].set(self.nodes)
+
+            jax.debug.print(f"save_t_step... done")
+        except Exception as e:
+            print("Err save_t_step", e)
 
     @jit
     def scatter_results_to_db(self, results, db_start_idx):
@@ -287,9 +314,49 @@ class DBLayer:
             results
         )
 
+    def sum_results(self, flattened_eq_results):
+        print("sum_results...")
+        # collect variations per field and sum it for rtdb
 
-    def get_out_shapes(self):
-        pass
+        _arange = jnp.arange(len(self.DB_CTL_VARIATION_LEN_PER_FIELD))
+
+        def _sum(_slice):
+            flatten_sum = jnp.sum(jnp.array(_slice))
+            print("flatten_sum", flatten_sum)
+            return flatten_sum
+
+        def process_eq_result_batch(eq_out_batch):
+            print("process_eq_result_batch...")
+            from jax import ops
+
+            group_ids = jnp.repeat(
+                jnp.arange(len(self.LEN_FEATURES_PER_EQ)),
+                self.LEN_FEATURES_PER_EQ
+            )
+
+            group_sums = ops.segment_sum(eq_out_batch, group_ids)
+
+            flattened_sum_results = vmap(
+                _sum,
+                in_axes=(0, 0)
+            )(
+                group_sums
+            )
+            return flattened_sum_results
+
+        eq_variation_len = jnp.arange(self.DB_CTL_VARIATION_LEN_PER_EQUATION_CUMSUM)
+
+        flattened_sum_results = jax.tree_util.tree_map(
+            process_eq_result_batch,
+            (
+                flattened_eq_results,
+                eq_variation_len
+            ),
+        )
+
+        print("sum_results... done")
+        return flattened_sum_results
+
 
 
     def flat_item(
@@ -303,32 +370,44 @@ class DBLayer:
         flat = jnp.ravel(item)
         return flat
 
+    def flatten_result(self, results) -> list[jnp.array]:
+        # tkes bare nersted results, outputs flaten nested items
+        try:
+            # loop each element -> apply ravel
+            def flat_item(item):
+                return jnp.ravel(item)
 
+            def _flat_eq_outs(batch):
+                return vmap(flat_item, in_axes=0)(batch)
 
-    def sort_results(
+            return jax.tree_util.tree_map(_flat_eq_outs, results)
+        except Exception as e:
+            print("Err flatten_result:", e)
+
+    def sort_results_rtdb(
             self,
-            step_results, # list[response
+            flatten_step_results, # list[response
     ):
-        """
-        # RESULT -> HISTORY DB todo: upsert directly to bq
-        # todo: add param stacks on single eq layer
-        n variations = n return
-        """
-        jax.debug.print("sort_results... ")
-        """nodes = self.nodes
+        # SAVE RTDB
+        jax.debug.print("sort_results_rtdb... ")
+        nodes = self.nodes
 
         def apply_one(
                 nodes,
                 payload
         ):
-            coords, item = payload
-            flat = self.flat_item(
-                coords,
-                item,
+            # get abs scaled idx
+            coords, flattened_item = payload
+
+            #
+            _start, _len = self.get_db_index(
+                *jnp.array(coords)[-3:]
             )
+
+            # apply slice
             nodes = jax.lax.dynamic_update_slice(
                 nodes,
-                flat,
+                flattened_item,
                 _start
             )
             return nodes, None
@@ -338,31 +417,12 @@ class DBLayer:
             nodes,
             (
                 self.METHOD_TO_DB,
-                step_results
+                flatten_step_results
             )
         )
-        for i, res_grid in step_results:
-            
-        
 
-        self.nodes = nodes"""
-
-
-
-        # DEBUG: vmap(step_results, METHOD_TO_DB) failed: "vmap got inconsistent sizes" (e.g. 1, 3, 72,
-        # 223). Per-equation results have different leading dims -> loop over equations; one update per eq.
-        # get_db_index expects 3 args (mod, field, param); coords may have 4 cols -> use coords[-3:].
-        # If an equation returns (array, list), take single array for DB write to avoid "list not valid JAX type".
-        for i, res in enumerate(step_results):
-            coords = self.METHOD_TO_DB[i]
-            _start, _len = self.get_db_index(*jnp.array(coords)[-3:])
-            res = step_results[i]
-            arr = res[0] if isinstance(res, (list, tuple)) else res
-            start_tuple = (_start,) if jnp.ndim(_start) == 0 else tuple(int(x) for x in _start)
-            self.nodes = jax.lax.dynamic_update_slice(self.nodes, arr, start_tuple)
-
-
-        jax.debug.print("sort_results... done")
+        self.nodes = nodes
+        jax.debug.print("sort_results_rtdb... done")
 
 
 
@@ -633,7 +693,6 @@ class DBLayer:
                         field_energy_param_index
                     )
                 ]
-
                 nonzero_indices = jnp.nonzero(energy_grid != 0)
 
                 pos_map = []
@@ -649,5 +708,18 @@ class DBLayer:
         return TimeMap(
             nodes,
         )
+
+
+
+"""
+for i, flatten_arr in enumerate(flatten_step_results):
+    coords = self.METHOD_TO_DB[i]
+    _start, _len = self.get_db_index(*jnp.array(coords)[-3:])
+    self.nodes = jax.lax.dynamic_update_slice(self.nodes, flatten_arr, _start)
+
+"""
+
+
+
 
 

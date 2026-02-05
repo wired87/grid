@@ -1,3 +1,4 @@
+import json
 import os
 import jax.numpy as jnp
 
@@ -6,6 +7,27 @@ from gnn.gnn import GNN
 
 import jax
 from jax_utils.deserialize_in import parse_value
+
+
+def _to_json_serializable(data):
+    """Convert JAX/numpy arrays and complex to JSON-serializable (list/dict)."""
+    if isinstance(data, list):
+        return [_to_json_serializable(x) for x in data]
+    if isinstance(data, tuple):
+        return [_to_json_serializable(x) for x in data]
+    if isinstance(data, dict):
+        return {k: _to_json_serializable(v) for k, v in data.items()}
+    if hasattr(data, "shape") and hasattr(data, "tolist"):
+        arr = jnp.asarray(data)
+        if jnp.iscomplexobj(arr):
+            return {"real": jnp.real(arr).tolist(), "imag": jnp.imag(arr).tolist()}
+        return arr.tolist()
+    if hasattr(data, "item"):
+        v = data.item()
+        if isinstance(v, (complex, jnp.complexfloating)):
+            return {"real": float(jnp.real(v)), "imag": float(jnp.imag(v))}
+        return float(v) if hasattr(v, "real") else v
+    return data
 
 
 class Guard:
@@ -50,9 +72,29 @@ class Guard:
     def run(self):
         # start sim on gpu
         print("run...")
-        #self.gnn_layer.db_layer.check()
         self.gnn_layer.main()
         print("run... done")
+        self._export_engine_state()
+
+    def _export_engine_state(self, out_path: str = "engine_output.json"):
+        """Save all generated engine data (history, db, tdb, etc.) to a local .json file."""
+        dl = self.gnn_layer.db_layer
+        try:
+            payload = {
+                "nodes": _to_json_serializable(dl.nodes),
+                "time_construct": _to_json_serializable(dl.time_construct),
+                "history_nodes": _to_json_serializable(dl.history_nodes),
+                "SCALED_PARAMS": _to_json_serializable(dl.SCALED_PARAMS),
+                "OUT_SHAPES": _to_json_serializable(dl.OUT_SHAPES),
+                "METHOD_TO_DB": _to_json_serializable(dl.METHOD_TO_DB),
+            }
+            if hasattr(dl, "tdb") and dl.tdb is not None:
+                payload["tdb"] = _to_json_serializable(dl.tdb)
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, allow_nan=True)
+            print("engine state saved to", out_path)
+        except Exception as e:
+            print("export_engine_state failed:", e)
 
     def finish(self):
         # Collect data

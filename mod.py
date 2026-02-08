@@ -82,146 +82,45 @@ class Node(nnx.Module):
 
     # Example parameter (weight) to be learned
     # Use nnx.Param for weights
-    def __init__(
-            self,
-            runnable=test,
-            amount_variations=0,
-    ):
-        #
-        self.feature_encoder = FeatureEncoder(
-            amount_variations
-        )
+    # CHANGED: accept runnable and amount_variations so GNN create_node(Node(runnable, amount_variations=...)) does not raise unexpected keyword argument.
+    def __init__(self, runnable=None, *, amount_variations=None):
         self.embedding_dim = 64
-        self.runnable = test
+        self.runnable = runnable if runnable is not None else test
         self.param_blur = .99
         self.result_blur = .01
-        self.amount_variations = amount_variations
-
-
-
-
+        self.amount_variations = amount_variations  # optional, for per-eq variation count
 
     def __call__(
             self,
-            grid,
+            unprocessed_in,
+            precomputed_grid,
             in_axes_def,
             t=0
     ):
-        # patterns here is the nested tuple list for one pattern execution
+        print("process_equation...")
 
-        # gen in featrues
-        in_features = self.feature_encoder.create_features(
-            inputs=grid,
-            axis_def=in_axes_def,
-            time=t,
-            param_idx=0
-        )
+        def blur_result(x):
+            return x
 
-        # receive list with None vales for
-        # non pre-computed
-        precomputed_results = self.get_precomputed_results(
-            in_features,
-            in_axes_def
-        )
-
-        outs = self.process_equation(
-            grid,
-            precomputed_results,
-            in_axes_def,
-        )
-
-        out_features = self.feature_encoder.create_features(
-            inputs=[outs], # wrap for tree uniform handling
-            axis_def=(0), # vmappable
-            time=t,
-            param_idx=-1 # outs altimes last entry
-        )
-        return outs, in_features, out_features
-
-
-    def get_precomputed_results(
-            self,
-            in_features: list,
-            axis_def,
-    ):
-        print("get_precomputed_results...")
-        out_feature_map = []
-        if in_features is None:
-            return out_feature_map
-        try:
-            feature_rows = self.convert_feature_to_rows(axis_def, in_features)
-            #print("get_precomputed_results feature_rows", [f.shape for f in feature_rows])
-
-            # todo check from 2
-            if len(self.feature_encoder.in_ts):
-                # past in features
-                def _make(*grids):
-                    return self.convert_feature_to_rows(
-                        axis_def, grids
-                    )
-
-                past_feature_rows = vmap(
-                    _make,
-                    in_axes=(0,*axis_def)
-                )(
-                    *self.feature_encoder.in_ts
-                )
-
-                print("past_feature_rows created")
-
-                jnp.stack(
-                    past_feature_rows,
-                    axis=0,
-                )
-
-                out_feature_map = vmap(
-                    self.fill_blur_vals,
-                    in_axes=(0, None)
-                )(
-                    embedding_current=feature_rows,
-                    prev_params=past_feature_rows
-                )
-            else:
-                out_feature_map = [None for _ in range(len(feature_rows))]
-
-        except Exception as e:
-            print("Err get_precomputed_results", e)
-            out_feature_map = []
-        print("check... done")
-        return out_feature_map
-
-
-
-
-    def convert_feature_to_rows(self, axis_def, in_features):
-        """
-
-        Etract flattened
-        :param axis_def:
-        :param in_features:
-        :return:
-        """
-        print("convert_feature_to_rows...")
-        if in_features is None:
-            return []
-
-        def _process(*item):
-            return jnp.concatenate([jnp.ravel(
-                i,
-                ) for i in item],axis=0)
+        def _calc(bres, *item):
+            # bres_padded = jnp.resize(bres_out, run_out.shape)
+            return jax.lax.cond(
+                bres is None,
+                lambda: blur_result(bres), #todo self.runnable(*item),
+                lambda: blur_result(bres),
+            )
 
         kernel = jax.vmap(
-            fun=_process,
-            in_axes=axis_def,
+            fun=_calc,
+            in_axes=(0, *in_axes_def)
         )
 
-        feature_rows = kernel(
-            *in_features
+        result = kernel(
+            precomputed_grid,
+            *unprocessed_in
         )
-
-        #print("feature_rows shape", [f.shape for f in feature_rows])
-        return feature_rows
-
+        print("process_equation... done")
+        return result
 
 
     def features(self, in_axes_def, inputs, input_shapes):
@@ -233,82 +132,6 @@ class Node(nnx.Module):
             inputs
         )
         return features
-
-
-
-    def fill_blur_vals(self, embedding_current, prev_params):
-        print("fill_blur_vals...")
-        embeddings = jnp.stack(prev_params, axis=0)      # (N, d_model)
-
-        # L2-Distanz zu allen
-        losses = jnp.linalg.norm(
-            embeddings -
-            embedding_current[None, :],
-            axis=1
-        )
-
-        # min entry returns idx (everythign is order based (fixed f-len)
-        idx = jnp.argmin(losses)
-        min_loss = losses[idx]
-
-        # -> PRE CALCULATED RESULT BASED ON BLUR
-        if min_loss <= self.result_blur:
-            return jnp.take(
-                self.feature_encoder.out_ts,
-                idx,
-            )
-        else:
-            # -> MUST BE CALCED
-            return None
-
-
-    def process_equation(
-            self,
-            inputs,
-            blur_results,
-            in_axes_def,
-    ):
-        print("process_equation...")
-
-        # DEBUG: (1) cond originally returned self.runnable (a function) -> "not a valid JAX type".
-        # (2) Branches must have same pytree/type: true_fun was leaf, false_fun list -> match structure.
-        # (3) Same dtype: true_fun bool[], false_fun float32[] -> cast both to float32.
-        # (4) Same shape: true_fun float32[1], false_fun float32[0] -> compute both, pad bres to
-        #     run_out.shape so cond accepts. (5) bres can contain None -> skip in _use_bres.
-        def _run(_x):
-            out = self.runnable(*_x)
-            if isinstance(out, (list, tuple)):
-                parts = [jnp.ravel(jnp.asarray(a, dtype=jnp.float32)) for a in out]
-                return jnp.concatenate(parts) if parts else jnp.array([], dtype=jnp.float32)
-            return jnp.asarray(out, dtype=jnp.float32).ravel()
-
-        def _use_bres(bres_val, _x):
-            if not isinstance(bres_val, (list, tuple)):
-                return jnp.asarray(bres_val, dtype=jnp.float32).ravel()
-            parts = [jnp.ravel(jnp.asarray(a, dtype=jnp.float32)) for a in bres_val if a is not None]
-            return jnp.concatenate(parts) if parts else jnp.array([], dtype=jnp.float32)
-
-        def _calc(bres, *item):
-            run_out = _run(item)
-            bres_out = _use_bres(bres, item)
-            bres_padded = jnp.resize(bres_out, run_out.shape)
-            return jax.lax.cond(
-                bres is None,
-                lambda: run_out,
-                lambda: bres_padded,
-            )
-
-        kernel = jax.vmap(
-            fun=_calc,
-            in_axes=(0, *in_axes_def)
-        )
-
-        result = kernel(
-            blur_results,
-            *inputs
-        )
-        print("process_equation... done")
-        return result, inputs
 
 
 

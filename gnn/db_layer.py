@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from jax import jit, vmap, lax
 
 from dtypes import TimeMap
+from jax import ops
 
 
 class DBLayer:
@@ -47,40 +48,32 @@ class DBLayer:
         self.SCALED_PARAMS:list[int] = []
         self.DB_CTL_VARIATION_LEN_PER_FIELD = jnp.array(DB_CTL_VARIATION_LEN_PER_FIELD)
 
-
-
-        self.LEN_FEATURES_PER_EQ=LEN_FEATURES_PER_EQ
-
-
-        self.gpu = gpu
-        self.DIMS=DIMS
-
-        self.history_nodes = [] # Collects state over time
-
+        # CHANGED: define FIELDS_CUMSUM and AMOUNT_PARAMS_PER_FIELD_CUMSUM before get_shapes;
+        # get_shapes -> get_abs_unscaled_db_idx -> get_rel_db_index uses them (was AttributeError).
         self.FIELDS_CUMSUM = jnp.concatenate([
             jnp.array([0]),
             jnp.cumsum(jnp.array(self.FIELDS))
         ])
-
-
-        # Dasselbe für die unskalierten Indizes, falls nötig
         self.AMOUNT_PARAMS_PER_FIELD_CUMSUM = jnp.concatenate([
             jnp.array([0]),
             jnp.cumsum(self.AMOUNT_PARAMS_PER_FIELD)
         ])
-
-
-        # Dasselbe für die unskalierten Indizes, falls nötig
         self.DB_PARAM_CONTROLLER_CUMSUM = jnp.concatenate([
             jnp.array([0]),
             jnp.cumsum(self.DB_PARAM_CONTROLLER)
         ])
 
+        self.OUT_SHAPES, self.OUT_SHAPE_REL_DB_IDX = self.get_shapes(
+            coords=self.METHOD_TO_DB
+        )
+
+        self.LEN_FEATURES_PER_EQ = LEN_FEATURES_PER_EQ
+        self.gpu = gpu
+        self.DIMS = DIMS
+        self.history_nodes = []
 
 
-
-
-
+        self.in_features=[]
 
 
 
@@ -91,7 +84,7 @@ class DBLayer:
 
         SCALED_DB = []
         TIME_DB = []
-        # get abs sum from each parameter for index
+#
 
         # scale db nodes
         try:
@@ -130,6 +123,9 @@ class DBLayer:
                     TIME_DB.append(jnp.array([single_param_value]))
 
                     self.SCALED_PARAMS.append(len_unscaled_param)
+
+
+
         except Exception as e:
             print("Err build_db", e)
 
@@ -152,13 +148,10 @@ class DBLayer:
             jnp.cumsum(self.DB_PARAM_CONTROLLER)
         ])
 
-
-
         self.tdb = jax.device_put(
             TIME_DB,
             self.gpu,
         )
-
 
         self.time_construct = jnp.array(
             [
@@ -172,9 +165,7 @@ class DBLayer:
             self.gpu,
         )
         self.out_shapes_sum = []
-        self.OUT_SHAPES = self.get_shapes(
-            coords=self.METHOD_TO_DB
-        )
+
         jax.debug.print("build_db... done")
 
 
@@ -260,7 +251,6 @@ class DBLayer:
             )
 
             #
-
             self.stack_tdb(sumed_results)
 
             # SAVE RT DB (sort_results_rtdb takes step_results only)
@@ -271,6 +261,7 @@ class DBLayer:
             self.time_construct = self.time_construct.at[0].set(self.nodes)
 
             jax.debug.print(f"save_t_step... done")
+            return all_results
         except Exception as e:
             print("Err save_t_step", e)
 
@@ -313,10 +304,14 @@ class DBLayer:
             self.nodes,
             results
         )
+    #artefakt
 
     def sum_results(self, flattened_eq_results):
+        # scan each metods outs
+        # sepparate into fields variation size blocks
+        # sum the result
+        # sort to db
         print("sum_results...")
-        # collect variations per field and sum it for rtdb
 
         _arange = jnp.arange(len(self.DB_CTL_VARIATION_LEN_PER_FIELD))
 
@@ -327,24 +322,24 @@ class DBLayer:
 
         def process_eq_result_batch(eq_out_batch):
             print("process_eq_result_batch...")
-            from jax import ops
 
+            # separate output struct
+            # into field variation blocks
+            len_f_per_eq = len(self.LEN_FEATURES_PER_EQ)
             group_ids = jnp.repeat(
-                jnp.arange(len(self.LEN_FEATURES_PER_EQ)),
+                jnp.arange(len_f_per_eq),
                 self.LEN_FEATURES_PER_EQ
             )
-
             group_sums = ops.segment_sum(eq_out_batch, group_ids)
 
             flattened_sum_results = vmap(
                 _sum,
                 in_axes=(0, 0)
-            )(
-                group_sums
-            )
+            )(group_sums)
             return flattened_sum_results
 
-        eq_variation_len = jnp.arange(self.DB_CTL_VARIATION_LEN_PER_EQUATION_CUMSUM)
+        eq_variation_len = jnp.arange(
+            self.DB_CTL_VARIATION_LEN_PER_EQUATION_CUMSUM)
 
         flattened_sum_results = jax.tree_util.tree_map(
             process_eq_result_batch,
@@ -353,10 +348,8 @@ class DBLayer:
                 eq_variation_len
             ),
         )
-
         print("sum_results... done")
         return flattened_sum_results
-
 
 
     def flat_item(
@@ -404,11 +397,14 @@ class DBLayer:
                 *jnp.array(coords)[-3:]
             )
 
-            # apply slice
+            # apply slice: start_indices must be tuple of length nodes.ndim (avoids "axis 1 is out of bounds for array of dimension 1")
+            nd = nodes.ndim
+            s = jnp.ravel(jnp.asarray(_start))
+            start_indices = (s[0],) * nd if nd >= 1 else ()
             nodes = jax.lax.dynamic_update_slice(
                 nodes,
                 flattened_item,
-                _start
+                start_indices
             )
             return nodes, None
 
@@ -496,31 +492,30 @@ class DBLayer:
         return shape
 
 
-
-
-
-
     def get_abs_unscaled_db_idx(self, coord_struct_with_tdim):
         abs_unscaled_db_idx = []
+
         for coord in coord_struct_with_tdim:
             print(coord)
             coord_exclude_time = coord[1:]
             #print("coord_exclude_time", coord_exclude_time)
             db_idx = self.get_rel_db_index(*coord_exclude_time)
             abs_unscaled_db_idx.append(db_idx)
-        return  abs_unscaled_db_idx
+
+        return abs_unscaled_db_idx
+
 
     def get_shapes(self, coords):
         print("get_shapes", coords)
         all_shape = []
-
+        db_shape_entry = []
         abs_un_idx = self.get_abs_unscaled_db_idx(coords)
         for idx in abs_un_idx:
             shape = self.DB_SHAPE[idx]
             all_shape.append(shape)
-        return all_shape
-
-
+            db_shape_entry.append(idx)
+        # CHANGED: return list, not jnp.array(all_shape); shapes have inhomogeneous dims (e.g. (3,) vs (13,3)) -> ValueError.
+        return all_shape, db_shape_entry
 
 
 
@@ -572,7 +567,9 @@ class DBLayer:
         return abs_unscaled_param_idx
 
 
-    def get_db_index(self, mod_idx, field_idx, rel_param_idx):
+
+
+    def get_db_index(self, abs_unscaled_param_idx):
         """
         field_param_start_idx = jnp.take(
             self.AMOUNT_PARAMS_PER_FIELD_CUMSUM,
@@ -580,14 +577,6 @@ class DBLayer:
         )
         """
         #print("get_db_index for mod_idx, field_idx, rel_param_idx:", mod_idx, field_idx, rel_param_idx)
-        
-        #print("self.SCALED_PARAMS_CUMSUM", self.SCALED_PARAMS_CUMSUM)
-        # get unscaled abs param idx
-        abs_unscaled_param_idx = self.get_rel_db_index(
-            mod_idx,
-            field_idx,
-            rel_param_idx
-        )
 
         # SCALED ABS IDX
         abs_param_start_idx = jnp.take(
@@ -643,12 +632,15 @@ class DBLayer:
         #print("extract_flattened_grid", item)
         time_dim, mod_idx, fidx, pidx = item
 
-        _start, _len = self.get_db_index(
+        abs_unscaled_param_idx = self.get_rel_db_index(
             mod_idx,
             fidx,
-            pidx,
+            pidx
         )
 
+        _start, _len = self.get_db_index(
+            abs_unscaled_param_idx
+        )
         #print("extract flattene grid _start, _len", _start, _len)
 
         # receive flatten entris
@@ -667,6 +659,19 @@ class DBLayer:
         #print("flatten_grid", flatten_grid)
         return flatten_grid
 
+
+
+    def get_rel_idx_batch(self, *inputs):
+        # print("self.SCALED_PARAMS_CUMSUM", self.SCALED_PARAMS_CUMSUM)
+        # get unscaled abs param idx
+        def xtract_single(mod_idx, field_idx, rel_param_idx):
+            abs_unscaled_param_idx = self.get_rel_db_index(
+                mod_idx,
+                field_idx,
+                rel_param_idx
+            )
+            return abs_unscaled_param_idx
+        return vmap(xtract_single, in_axes=0)(*inputs)
 
 
     ### TODO LATER

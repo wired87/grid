@@ -1,23 +1,14 @@
-import pprint
-
 import jax
-from jax import jit, vmap, ops
+from jax import jit, vmap
 # todo _BYTE binary_view = ' '.join(format(b, '08b') for b in text.encode('utf-8'))
 from gnn.db_layer import DBLayer
 from gnn.feature_encoder import FeatureEncoder
 from gnn.injector import InjectorLayer
-from jax_utils._segment import split_array
 from jax_utils.conv_flat_to_shape import bring_flat_to_shape
 from mod import Node
 from utils import SHIFT_DIRS, create_runnable
 from flax import nnx
-"""
-Build:
-LINEARS, DB
 
-
-
-"""
 import jax.numpy as jnp
 
 class GNN:
@@ -105,8 +96,6 @@ class GNN:
         jax.debug.print("process finished.")
 
 
-
-
     def prepare(self):
         # DB
         self.db_layer.build_db(
@@ -115,8 +104,6 @@ class GNN:
 
         # layer to define all ax et
         self.prep()
-
-
 
 
     def simulate(self):
@@ -129,9 +116,7 @@ class GNN:
                 )
 
                 # get params from DB layer and init calc
-                all_results = self.calc_batch(
-                    t=step
-                )
+                all_results = self.calc_batch()
 
                 self.db_layer.save_t_step(
                     all_results,
@@ -185,18 +170,24 @@ class GNN:
                 new_t.append(st)  # Behält Shape (12, 4)
             else:
                 new_t.append(st[0])  # Reduziert auf Shape (4,)
-        print("short_transformed... done", new_t)
+        print("short_transformed... done")
         return new_t
 
 
     def get_mod_idx(self, abs_eq_idx):
         # get mod_idx based on eq_idx
-        # 1,2 -> 1,3
         cum = jnp.cumsum(jnp.array(self.MODULES))  # kumulative Summe
         # finde erstes i, bei dem cum >= abs_eq_idx
         idx = jnp.argmax(cum >= abs_eq_idx)
         return idx
 
+    def reshape_variant_block(self, edges, total_amount_params_current_eq, amount_params_current_eq):
+        result = edges.reshape(
+            total_amount_params_current_eq // amount_params_current_eq,
+            amount_params_current_eq,
+            4,
+        )
+        return result
 
     def prep(self):
         print("prep...")
@@ -205,9 +196,16 @@ class GNN:
         for eq_idx, eq in enumerate(self.METHODS):
             #mod_idx = self.get_mod_idx(eq_idx)
 
-            variations, amount_params = self.extract_eq_variations(
+            variations, amount_params_current_eq, total_amount_params_current_eq = self.extract_eq_variations(
                 eq_idx,
             )
+
+            variations = self.reshape_variant_block(
+                variations,
+                total_amount_params_current_eq,
+                amount_params_current_eq,
+            )
+
 
             examle_variation = variations[0]
             axs, shapes = self.db_layer.get_axis_shape(
@@ -221,7 +219,6 @@ class GNN:
             # get all in shapes
             self.all_axs.append(axs)
             self.all_shapes.append(shapes)
-
 
             #
             transformed = self.short_transformed(
@@ -239,7 +236,7 @@ class GNN:
                 transformed,
                 axis_def=self.all_axs[eq_idx],
             )
-
+            # extract coords -> get data (!transformed) -> gen features ->
             #
             self.create_out_linears_process(
                 eq_idx,
@@ -266,7 +263,7 @@ class GNN:
         )
 
         # MTDB & DB_CTL_VARIATION_LEN_PER_FIELD have same len
-        unscaled_db_len = self.batch_len_unscaled(
+        unscaled_db_len = self.db_layer.batch_len_scaled(
             rel_ids, self.all_axs[eq_idx],
         )
 
@@ -286,42 +283,20 @@ class GNN:
             eq_idx,
             transformed,
         )
-        print("rel_ids", rel_ids)
-        unscaled_db_len = jax.tree_util.tree_map(
-            self.batch_len_unscaled,
+        #print("rel_ids", rel_ids)
+
+        scaled_db_len = jax.tree_util.tree_map(
+            self.db_layer.batch_len_scaled,
             rel_ids,
             axis_def,
         )
 
-        print("unscaled_db_len", unscaled_db_len)
-
         # create&save eq linears
         self.feature_encoder.build_linears(
             eq_idx,
-            unscaled_db_len
+            scaled_db_len
         )
-
-
-    def handle_in_features(self, grids):
-        # gen in featrues
-
-        def _handle_single_grid_features(grid, in_ax_def, t=0):
-            in_features = self.feature_encoder.create_features(
-                inputs=grid,
-                axis_def=in_ax_def,
-                time=t,
-                param_idx=0
-            )
-            return in_features
-
-        features = jax.tree_util.tree_map(
-            _handle_single_grid_features,
-            grids,
-            self.all_axs
-        )
-
-
-
+        print("create_in_linears_process... done")
 
 
 
@@ -340,32 +315,8 @@ class GNN:
         )
         return node
 
-    def build_projections(self):
-        self.projection_shapes = []
 
-        # extend
-        for i in range(len(self.all_shapes)):
-            self.projection_shapes.append(
-                [
-                    *self.all_shapes[i],
-                    self.db_layer.OUT_SHAPES[i]
-                ]
-            )
-
-        return [
-            [
-                nnx.Linear(
-                    in_features=shape,
-                    out_features=self.model_feature_dims,
-                    rngs=nnx.Rngs
-                )
-                for shape in shapes
-            ]
-           for shapes in self.projection_shapes
-        ]
-
-
-    def calc_batch(self, t=0):
+    def calc_batch(self):
         jax.debug.print("calc_batch...")
 
         # calc all methods and apply result to new g
@@ -382,9 +333,17 @@ class GNN:
             # # # #
             # a b
             # 1 2
-            variations, amount_params = self.extract_eq_variations(
+            variations, amount_params_current_eq, total_amount_params_current_eq = self.extract_eq_variations(
                 eq_idx,
             )
+
+            #
+            variations = self.reshape_variant_block(
+                variations,
+                total_amount_params_current_eq,
+                amount_params_current_eq,
+            )
+
 
             # transform shape along vertical ax
             # # # #
@@ -406,12 +365,26 @@ class GNN:
                 transformed,
             )
 
-            # IN FEATURESS
-            precomputed_results = self.feature_encoder.create_in_features(
+            ### IN FEATURES ###
+            features_tree = self.feature_encoder.create_in_features(
                 inputs=flatten_transformed, # flatten struct include just 1d entries -> order should be same as linears pre defined
                 eq_idx=eq_idx,
                 axis_def=axis_def,
             )
+
+            high_score_elements = self.feature_encoder.get_precomputed_results(
+                features_tree,
+                axis_def,
+                eq_idx,
+            )
+
+            _blur = jax.tree_util.tree_map(
+                self.feature_encoder.blur_result_from_in_tree,
+                high_score_elements,
+                eq_idx,
+            )
+            ### ###
+
 
 
             # reshape flattened batch values
@@ -419,13 +392,13 @@ class GNN:
                 eq_idx,
                 flatten_transformed,
             )
-            print("flatten_transformed", flatten_transformed)
+            #print("flatten_transformed", flatten_transformed)
 
 
             # calc single equation
             results = node(
                 unprocessed_in=inputs,
-                precomputed_grid=precomputed_results,
+                precomputed_grid=_blur,
                 in_axes_def=axis_def,
             )
 
@@ -471,10 +444,14 @@ class GNN:
         return vmap(xtract_single, in_axes=0)(abs_unscaled_param_idx_batch)
 
 
+
+
+
+
+
     def extract_flat_params(self, eq_idx, transformed):
         print("extract_flat_params...")
         flatten_transformed = []
-        #flatten_sepparated = []
 
         for i, (param_grid, ax) in enumerate(
             zip(
@@ -493,29 +470,26 @@ class GNN:
                     coord_result = self.db_layer.extract_flattened_grid(
                         coords
                     )
+
                     # print(f"coord_result for {i} {coords}", len(coord_result))
-                    single_param_grid.extend(
+                    single_param_grid.append(
                         coord_result
                     )
-                    """flatten_sepparated.append(
-                        coord_result
-                    )"""
             else:
                 coord_result = self.db_layer.extract_flattened_grid(param_grid)
                 # print(f"coord_result for {i} {param_grid}", len(coord_result))
-                single_param_grid.extend(
+                single_param_grid.append(
                     coord_result
                 )
 
             # print("single_param_grid", single_param_grid, len(single_param_grid))
             flatten_transformed.append(single_param_grid)
-        print("flatten_transformed")
-        pprint.pp(flatten_transformed)
 
         print("extract_flat_params... done")
-        return flatten_transformed#, flatten_sepparated
+        return flatten_transformed
 
     def batch_rel_idx(self, batch):
+        batch = jnp.reshape(jnp.ravel(batch), (-1, 4))
         def _wrapper(item):
             return self.db_layer.get_rel_db_index(
                 *item
@@ -525,58 +499,37 @@ class GNN:
             _wrapper,
             in_axes=0
         )(
-            # exclude time
-            jnp.array(
-                list(
-                    i[1:]
-                    for i in batch
-                )
-            )
+            batch[:, 1:]
         )
 
 
 
-    def batch_len_unscaled(self, batch, axis):
-        def _wrapper(i):
-            return jnp.take(
-                self.db_layer.DB_PARAM_CONTROLLER,
-                i,
-            )
-        #def vmap_batch(batch):
-        if axis == 0:
-            return vmap(
-                _wrapper,
-                in_axes=0
-            )(
-                # exclude time
-                batch
-            )
-        else:
-            return jnp.take(
-                self.db_layer.DB_PARAM_CONTROLLER,
-                batch,
-            )
+
 
     def get_rel_db_index_batch(self, eq_idx, transformed):
         print("get_rel_db_index_batch...")
+
         def _extract_coord_batch(ax, coord_batch):
             if ax == 0:
                 result = self.batch_rel_idx(
                     coord_batch
                 )
             else:
-                item = coord_batch[1:]
-                print(">item", item)
+                flat = jnp.ravel(jnp.asarray(coord_batch))
                 result = self.db_layer.get_rel_db_index(
-                    *item
+                    *flat[-3:]
                 )
+            #print(">result", result)
             return result
 
-        rel_idx_map = jax.tree_util.tree_map(
-            _extract_coord_batch,
-            self.all_axs[eq_idx],
-            transformed,
-        )
+        rel_idx_map = []
+        for item, ax in zip(transformed, self.all_axs[eq_idx]):
+            rel_idx_map.append(
+                _extract_coord_batch(
+                    ax,
+                    item,
+                )
+            )
         print("get_rel_db_index_batch... done")
         return rel_idx_map
 
@@ -599,8 +552,7 @@ class GNN:
 
     def extract_eq_variations(self, eq_idx):
         """
-        Extrahiert alle Variationen für ein spezifisches Gleichung.
-        Navigiert durch DB und AXIS und skaliert Parameter bei axis == 0 auf amount_nodes.
+        Extract variations
         """
         jax.debug.print("extract_eq_variations ")
 
@@ -644,16 +596,8 @@ class GNN:
             total_amount_params_current_eq,
             #axis=0,
         )
-        print("slice", slice)
-
-        # Reshape in (num_chunks, n, len(inner_list))
-        result = edges.reshape(
-            total_amount_params_current_eq // amount_params_current_eq,
-            amount_params_current_eq,
-            4,
-        )
         print("extract_eq_variations... done")
-        return result, amount_params_current_eq
+        return edges, amount_params_current_eq, total_amount_params_current_eq
 
 
 
@@ -701,6 +645,57 @@ class GNN:
             return -1
 
 
+    # WASTELANDS
+
+    def create_feature_rows(self, eq_idx, variations):
+        #
+
+        def _process(variation, row_idx):
+            flatten_params = jax.tree_util.tree_map(
+                lambda x: self.db_layer.extract_flattened_grid(x),
+                variation
+            )
+
+            linears = self.feature_encoder.get_linear_row(
+                eq_idx,
+                row_idx,
+            )
+
+            feature_rows = jax.tree_util.tree_map(
+                lambda p, l: self.feature_encoder.gen_feature(p, l),
+                flatten_params,
+                linears,
+            )
+
+            return feature_rows
+
+        try:
+            kernel = jax.vmap(
+                _process,
+                in_axes=(0, 0),
+            )
+
+            idx_map = jnp.arange(len(variations))
+
+            feature_rows = kernel(
+                variations,
+                idx_map
+            )
+
+            # save features
+            self.feature_encoder._save_in_feature_method_grid(
+                feature_rows,
+                eq_idx
+            )
+
+            print("create_feature_rows... done")
+            return feature_rows
+        except Exception as e:
+            print("Err create_feature_rows", e)
+
+
+"""
+
     def set_next_nodes(self, pos_module_field_node):
         for module in pos_module_field_node:
             for field_pos_list in module:
@@ -719,8 +714,6 @@ class GNN:
         return sender, receiver
 
 
-
-
     def sort_features(self, eq_idx, all_features):
         len_eq_variations = self.ITERATORS["eq_variations"][eq_idx]
         start_idx = jnp.sum(self.ITERATORS["eq_variations"])[:eq_idx]
@@ -730,9 +723,6 @@ class GNN:
         self.model_skeleton.at[
             tuple(indices.T)
         ].add(all_features)
-
-
-"""
 def _workflow(self):
     model = [
         # INJECTIOIN -> to get directly inj pattern (todo switch throguh db mapping)
@@ -809,4 +799,63 @@ Ziel:
             ]
         )
 
+
+    def handle_in_features(self, grids):
+        # gen in featrues
+
+        def _handle_single_grid_features(grid, in_ax_def, t=0):
+            in_features = self.feature_encoder.create_features(
+                inputs=grid,
+                axis_def=in_ax_def,
+                time=t,
+                param_idx=0
+            )
+            return in_features
+
+        features = jax.tree_util.tree_map(
+            _handle_single_grid_features,
+            grids,
+            self.all_axs
+        )
 """
+
+"""#
+feature_rows = self.create_feature_rows(
+    eq_idx,
+    variations
+)
+
+# 
+_blur = self.feature_encoder.get_precomputed_results(
+    feature_rows,
+    axis_def,
+    eq_idx,
+    
+    
+
+    def build_projections(self):
+        self.projection_shapes = []
+
+        # extend
+        for i in range(len(self.all_shapes)):
+            self.projection_shapes.append(
+                [
+                    *self.all_shapes[i],
+                    self.db_layer.OUT_SHAPES[i]
+                ]
+            )
+
+        return [
+            [
+                nnx.Linear(
+                    in_features=shape,
+                    out_features=self.model_feature_dims,
+                    rngs=nnx.Rngs
+                )
+                for shape in shapes
+            ]
+           for shapes in self.projection_shapes
+        ]
+
+
+)"""

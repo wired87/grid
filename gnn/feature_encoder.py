@@ -39,6 +39,28 @@ class FeatureEncoder(nnx.Module):
         self.feature_controller = []
 
 
+    def get_linear_row(self, eq_idx, row_idx):
+        print("get_linear_row...")
+        return jax.tree_util.tree_map(
+            lambda x: jnp.take(x, row_idx, axis=0),
+            jnp.take(jnp.array(self.in_linears), eq_idx),
+        )
+
+
+    def gen_feature(
+            self,
+            param,
+            linear,
+    ):
+        # embed linear:nnx.Linear
+        print("gen_feature...")
+        try:
+            embedding = jax.nn.gelu(linear(param))
+            #print("embedding", embedding)
+            return embedding
+        except Exception as e:
+            print("Err gen_feature", e)
+
     def gen_in_feature_single_variation(
         self,
         param_grid,
@@ -51,32 +73,31 @@ class FeatureEncoder(nnx.Module):
         # values instead of flatten them again
         """
         print("gen_feature_single_variation...")
+        print("param_grid linear_batch,ax", type(param_grid), type(linear_batch), type(ax))
 
-        def _work_param(
-                flatten_param,
-                linear:nnx.Linear,
-        ):
-            # embed
-            return jax.nn.gelu(
-                linear(flatten_param)
-            )
 
+        feature_block_single_param_grid = []
+        print("param_grid", param_grid)
         try:
-            kernel = vmap(
-                _work_param,
-                in_axes=(ax, 0)
-            )
+            for i, (param, linear) in enumerate(
+                    zip(param_grid, linear_batch)
+            ):
+                if linear:
+                    try:
+                        print("param, linear",param, linear)
+                        embedding = jax.nn.gelu(linear(jnp.array(param)))
+                        feature_block_single_param_grid.append(embedding)
 
-            feature_block_single_param_grid = kernel(
-                param_grid,
-                linear_batch,
-            )
+                    except Exception as e:
+                        print(f"Err _work_param at index {i}: {e}")
 
-            # working single parameter
+            # Am Ende alles zu einem JAX-Array zusammenfügen
             features = jnp.array(feature_block_single_param_grid)
+
         except Exception as e:
-            print("Err gen_feature_single_variation", e)
-            return jnp.array([])  # CHANGED: always return array so tree_map doesn't get None -> "Expected list, got (...)"
+            print("Err gen_in_feature_single_variation", e)
+            return jnp.array([])
+
         print("gen_feature_single_variation... done")
         return features
 
@@ -92,17 +113,23 @@ class FeatureEncoder(nnx.Module):
         # values instead of flatten them again
         """
         print("gen_feature_single_variation...")
+        print("param_grid", type(param_grid))
+        print("out_linears", type(out_linears))
+
+        idx_map = jnp.arange(len(out_linears))
 
         def _work_param(
                 flatten_param,
-                linear:nnx.Linear,
+                idx:int,
         ):
+            linear: nnx.Linear = out_linears[idx]
             # embed
             return jax.nn.gelu(
                 linear(flatten_param)
             )
 
         try:
+            param_grid = jnp.atleast_1d(jnp.asarray(param_grid))
             kernel = vmap(
                 _work_param,
                 in_axes=(0, 0)
@@ -110,7 +137,7 @@ class FeatureEncoder(nnx.Module):
 
             feature_block_single_param_grid = kernel(
                 param_grid,
-                out_linears
+                idx_map,
             )
 
             # working single parameter
@@ -129,12 +156,13 @@ class FeatureEncoder(nnx.Module):
             self,
             features_tree:jnp.array,
             eq_idx,
+            item_idx
     ):
         # todo where create skeletons?
         print("_save_in_feature_method_grid...")
         try:
             # bring to 1d shspae
-            self.in_store[eq_idx].append(features_tree)
+            self.in_store[eq_idx][item_idx].append(features_tree)
         except Exception as e:
             print("Err _save", e)
         print("_save_in_feature_method_grid... done")
@@ -153,9 +181,9 @@ class FeatureEncoder(nnx.Module):
 
         linears = []
         for item in unscaled_db_len:
-            print("item", item)
+            #print("item", item)
             var_linears = []
-
+            item = jnp.atleast_1d(jnp.asarray(item))
             for variation in item:
                 #print("item", item)
                 if variation > 0:
@@ -172,20 +200,32 @@ class FeatureEncoder(nnx.Module):
         self.in_linears.append(linears)
         print(f"build_linears... done")
 
+
     def create_in_features(
             self,
             inputs,
             axis_def,
             eq_idx=0,
-
     ):
         print("create_in_features...")
         precomputed_results = None
+        _arange = jnp.arange(len(inputs))
+
+        def _save(
+                results,
+                _arange
+        ):
+            self._save_in_feature_method_grid(
+                results,
+                eq_idx,
+                _arange,
+            )
 
         try:
             # in feature store ts
-            results=[]
+            results = []
             print("len comparishon", len(inputs), len(self.in_linears[eq_idx]), len(axis_def))
+            # create emebddings for all scaled instances
             for input, linear_insance, ax in zip(inputs, self.in_linears[eq_idx], axis_def):
                 f_in_results = self.gen_in_feature_single_variation(
                     input,
@@ -193,27 +233,59 @@ class FeatureEncoder(nnx.Module):
                     ax,
                 )
                 results.append(f_in_results)
+
             print("create_in_features results generated...")
 
-            # jut stack all vfeatrues per eq to 1d array
-            self._save_in_feature_method_grid(
-                features_tree=results,
-                eq_idx=eq_idx,
+            jax.tree_util.tree_map(
+                lambda leaf: _save(leaf, _arange),
+                results
             )
-
-            # blur vals #
-            # receive list with None vales for
-            # non pre-computed
-            # todo algorithm track alternative reality for ientified similar nodes -> implement in ctlr check
-            precomputed_results = self.get_precomputed_results(
-                results,
-                axis_def,
-                eq_idx,
-            )
+            return results
         except Exception as e:
             print("Err create_in_features:", e)
         print("create_in_features... done")
         return precomputed_results
+
+
+
+    def blur_result_from_in_tree(
+            self,
+            eq_idx,
+            high_score_tree,
+            len_variations,
+    ):
+        arange = jnp.arange(len_variations)
+
+        def _get_blur_val(row_idx):
+            score = jnp.sum(
+                jax.tree_util.tree_map(
+                    lambda x: jnp.take(x, row_idx, axis=0),
+                    jnp.take(jnp.array(high_score_tree), eq_idx),
+                )
+            )
+
+            if score <= self.result_blur:
+                return jnp.take( # todo may pick from history db
+                    self.out_store[eq_idx],
+                    row_idx,
+                )
+            else:
+                # -> MUST BE CALCED
+                return None
+
+        result = vmap(
+            _get_blur_val,
+            in_axes=(0, 0)
+        )(
+            arange
+        )
+        # todo might take tree_map
+        print("blur_result_from_in_tree... done")
+        return result
+
+
+
+
 
     def create_out_features(
             self,
@@ -239,92 +311,78 @@ class FeatureEncoder(nnx.Module):
         print("FeatureEncoder.out_processor... done")
 
 
-    def fill_blur_vals(self, feature_row, prev_params, eq_idx):
-        print("fill_blur_vals...")
-        embeddings = jnp.stack(prev_params, axis=0)      # (N, d_model)
-        if embeddings.ndim == 1:
-            embeddings = jnp.reshape(embeddings, (1, -1))
+    def fill_blur_vals(self, feature_row, prev_params):
+        # similarity search (ss) nearest neighbor filter blur
+        try:
+            print("fill_blur_vals...")
+            embeddings = jnp.stack(prev_params, axis=0)      # (N, d_model)
+            if embeddings.ndim == 1:
+                embeddings = jnp.reshape(embeddings, (1, -1))
 
-        ec = feature_row
-        if jnp.ndim(ec) == 1:
-            ec = jnp.reshape(ec, (1, -1))
+            ec = feature_row
+            if jnp.ndim(ec) == 1:
+                ec = jnp.reshape(ec, (1, -1))
 
-        # L2-Distanz zu allen (axis=-1 works for 1D and 2D; axis=1 fails for 1D)
-        diff = embeddings - ec
+            # L2-Distanz zu allen (axis=-1 works for 1D and 2D; axis=1 fails for 1D)
+            diff = embeddings - ec
 
-        losses = jnp.linalg.norm(diff, axis=-1)
+            losses = jnp.linalg.norm(diff, axis=-1)
 
-        # min entry returns idx (everythign is order based (fixed f-len)
-        idx = jnp.argmin(losses)
-        min_loss = losses[idx]
-
-        # -> PRE CALCULATED RESULT BASED ON BLUR
-        if min_loss <= self.result_blur:
-            return jnp.take(
-                self.out_store[eq_idx],
-                idx,
-            )
-        else:
-            # -> MUST BE CALCED
-            return None
+            # min entry returns idx (everythign is order based (fixed f-len)
+            idx = jnp.argmin(losses)
+            min_loss = losses[idx]
+            return min_loss
+            # -> PRE CALCULATED RESULT BASED ON BLUR
 
 
-
-
+        except Exception as e:
+            print("Err fill_blur_vals", e)
 
 
     def get_precomputed_results(
             self,
-            in_features_tree,
+            stacked_features_all_params,
             axis_def,
             eq_idx,
     ):
         print("get_precomputed_results...")
-        # amoutn vars
-        try:
-            feature_rows = self.convert_feature_to_rows(
-                axis_def,
-                in_features_tree
-            )
-            #print("get_precomputed_results feature_rows", [f.shape for f in feature_rows])
 
+        def generate_high_score_single(param_embedding_item, pre_param_grid):
+            self.fill_blur_vals(
+                param_embedding_item,
+                pre_param_grid,
+            )
+
+        def _create_high_score_batch(
+                param_embedding_grid,
+                param_idx,
+        ):
+
+            return vmap(
+                generate_high_score_single,
+                in_axes=(0, None)
+            )(
+                param_embedding_grid,
+                self.in_store[eq_idx][param_idx],
+            )
+
+        try:
             # todo check from 2; avoid indexing in_store when empty (index out of bounds for axis 0 with size 0)
             # past in features
-            def _make(*grids):
-                return self.convert_feature_to_rows(
-                    axis_def, grids
-                )
-
-            past_feature_rows = vmap(
-                _make,
-                in_axes=(
-                    0,
-                    *axis_def
-                )
-            )(
-                *self.in_store[eq_idx]
-            )
-            
-            print("past_feature_rows created")
-
-            jnp.stack(
-                past_feature_rows,
-                axis=0,
+            _arange = jnp.arange(
+                len(self.in_store[eq_idx])
             )
 
-            out_feature_map = vmap(
-                self.fill_blur_vals,
-                in_axes=(0, None, None)
-            )(
-                feature_rows=feature_rows,
-                prev_params=past_feature_rows,
-                eq_idx=eq_idx
+            high_score_map = jax.tree_util.tree_map(
+                _create_high_score_batch,
+                stacked_features_all_params,
+                _arange,
             )
         except Exception as e:
             print("Err get_precomputed_results", e)
-            out_feature_map = []
+            high_score_map = []
         print("check... done")
-        return out_feature_map
+        return high_score_map
 
 
     def convert_feature_to_rows(
@@ -332,37 +390,45 @@ class FeatureEncoder(nnx.Module):
             axis_def,
             in_features,
     ):
+        # convert past feature steps o rows
         print("convert_feature_to_rows...")
-        if in_features is None:
-            return []
+        print("convert_feature_to_rows in_features", [len(i) for i in in_features], axis_def)
+
+        def batch_padding():
+            for i, item in enumerate(in_features):
+                if len(item) == 0:
+                    padding = jnp.array([
+                        jnp.zeros(self.d_model)
+                        for _ in range(len(in_features[0]))
+                    ])
+                    in_features[i] = padding
+            return in_features
 
         def _process(*item):
+            print("_process...")
+            _arrays = jax.tree_util.tree_map(jnp.array, item)
+            _arrays = jax.tree_util.tree_map(jnp.ravel, _arrays)
+
             return jnp.concatenate(
-                [
-                    jnp.ravel(i)
-                    for i in item
-                ],
+                arrays=jnp.array(_arrays),
                 axis=0
             )
 
-        kernel = jax.vmap(
-            fun=_process,
-            in_axes=axis_def,
-        )
+        try:
+            in_features = batch_padding()
 
-        feature_rows = kernel(
-            *in_features
-        )
-        print("convert_feature_to_rows... done")
-        return feature_rows
+            kernel = jax.vmap(
+                fun=_process,
+                in_axes=axis_def,
+            )
 
-
-
-
-    def ctlr(self):
-        #
-        amount_params = self.skeleton / self.amount_variations
-        return
+            feature_rows = kernel(
+                *in_features
+            )
+            print("convert_feature_to_rows... done")
+            return feature_rows
+        except Exception as e:
+            print("Err convert_feature_to_rows", e)
 
 
     def create_out_linears(
@@ -371,7 +437,6 @@ class FeatureEncoder(nnx.Module):
             feature_len_per_out,
     ):
         print("create_out_linears...")
-
 
         linears= []
         for in_dim, amount_features in zip(
@@ -444,5 +509,17 @@ def create_out_linears(self):
     print("classify_feature...")
     # CHANGED: linear_batch is list of nnx.Linear modules, not numeric -> return list, not jnp.array.
     return linear_batch
+        try:
+            feature_block_single_param_grid = []
+            for item in _arange:
+                res = _work_param(
+                    item
+                )
+                feature_block_single_param_grid.append(res)
 
+            # working single parameter
+            features = jnp.array(feature_block_single_param_grid)
+        except Exception as e:
+            print("Err gen_in_feature_single_variation", e)
+            return jnp.array([])
 """

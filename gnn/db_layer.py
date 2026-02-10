@@ -84,7 +84,6 @@ class DBLayer:
 
         SCALED_DB = []
         TIME_DB = []
-#
 
         # scale db nodes
         try:
@@ -123,8 +122,6 @@ class DBLayer:
                     TIME_DB.append(jnp.array([single_param_value]))
 
                     self.SCALED_PARAMS.append(len_unscaled_param)
-
-
 
         except Exception as e:
             print("Err build_db", e)
@@ -506,7 +503,7 @@ class DBLayer:
 
 
     def get_shapes(self, coords):
-        print("get_shapes", coords)
+        #print("get_shapes", coords)
         all_shape = []
         db_shape_entry = []
         abs_un_idx = self.get_abs_unscaled_db_idx(coords)
@@ -544,6 +541,7 @@ class DBLayer:
 
         überall muss field order persistency
         """
+        print("get_rel_db_index...")
         # PREV FIELDS
         all_fields_preset = jnp.take(
             self.FIELDS_CUMSUM,
@@ -564,6 +562,7 @@ class DBLayer:
 
         abs_unscaled_param_idx = field_param_start_idx + rel_param_idx
         #print("abs_param_idx", abs_unscaled_param_idx)
+        print("get_rel_db_index... done")
         return abs_unscaled_param_idx
 
 
@@ -576,15 +575,13 @@ class DBLayer:
             jnp.arange(total_fields_idx)
         )
         """
-        #print("get_db_index for mod_idx, field_idx, rel_param_idx:", mod_idx, field_idx, rel_param_idx)
+        print(f"get_db_index...")
 
         # SCALED ABS IDX
         abs_param_start_idx = jnp.take(
             self.SCALED_PARAMS_CUMSUM,
             abs_unscaled_param_idx
         )
-
-        #print("abs_param_start_idx", abs_param_start_idx)
 
         #
         field_param_end_idx = jnp.take(
@@ -597,6 +594,7 @@ class DBLayer:
         slice_len = field_param_end_idx - abs_param_start_idx
         #print("slice_len", slice_len)
         # DB_PARAM_CONTROLLER#
+        print("db_idx xtct.. done")
         return abs_param_start_idx, slice_len
 
 
@@ -618,7 +616,11 @@ class DBLayer:
         flattened_method_param_grid_for_all_variations = jax.vmap(
             self.extract_flattened_grid,
             in_axes=0
-        )(variation_param_idx)
+        )(
+            variation_param_idx
+        )
+
+
 
         jax.debug.print("extract_field_param_variation...")
         return flattened_method_param_grid_for_all_variations
@@ -629,7 +631,7 @@ class DBLayer:
             item,
     ):
         # Extract single parameter flatten grid from db
-        #print("extract_flattened_grid", item)
+        print("extract_flattened_grid")
         time_dim, mod_idx, fidx, pidx = item
 
         abs_unscaled_param_idx = self.get_rel_db_index(
@@ -641,11 +643,15 @@ class DBLayer:
         _start, _len = self.get_db_index(
             abs_unscaled_param_idx
         )
-        #print("extract flattene grid _start, _len", _start, _len)
+        print("_start, _len", _start, _len)
 
         # receive flatten entris
-        time_item = jnp.take(self.time_construct, time_dim, axis=0)
-        #print("time_item", time_item)
+        time_item = jnp.take(
+            self.time_construct,
+            time_dim,
+            axis=0
+        )
+        print("time_item set...")
 
         flatten_grid = jax.lax.dynamic_slice_in_dim(
             # set t dim construct to chose from
@@ -656,7 +662,7 @@ class DBLayer:
             _len,
             axis = 0
         )
-        #print("flatten_grid", flatten_grid)
+        print("extract_flattened_grid... done")
         return flatten_grid
 
 
@@ -714,17 +720,50 @@ class DBLayer:
             nodes,
         )
 
+    def batch_len_unscaled(self, batch, axis):
+        def _wrapper(i):
+            return jnp.take(
+                self.DB_PARAM_CONTROLLER,
+                i,
+            )
+        #def vmap_batch(batch):
+        if axis == 0:
+            return vmap(
+                _wrapper,
+                in_axes=0
+            )(
+                # exclude time
+                batch
+            )
+        else:
+            return jnp.take(
+                self.DB_PARAM_CONTROLLER,
+                batch,
+            )
 
 
-"""
-for i, flatten_arr in enumerate(flatten_step_results):
-    coords = self.METHOD_TO_DB[i]
-    _start, _len = self.get_db_index(*jnp.array(coords)[-3:])
-    self.nodes = jax.lax.dynamic_update_slice(self.nodes, flatten_arr, _start)
-
-"""
 
 
-
+    def batch_len_scaled(self, batch, axis):
+        scaled_vals = jnp.array(self.SCALED_PARAMS)
+        def _wrapper(i):
+            return jnp.take(
+                scaled_vals,
+                i,
+            )
+        #def vmap_batch(batch):
+        if axis == 0:
+            return vmap(
+                _wrapper,
+                in_axes=0
+            )(
+                # exclude time
+                batch
+            )
+        else:
+            return jnp.take(
+                scaled_vals,
+                batch,
+            )
 
 

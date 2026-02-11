@@ -3,6 +3,7 @@ import os
 import jax.numpy as jnp
 
 from data_handler.main import load_data
+from data_handler.load_sa_creds import load_service_account_credentials
 from gnn.gnn import GNN
 
 import jax
@@ -125,6 +126,82 @@ class Guard:
             "DB_CONTROLLER": serialized_history,
             "MODEL_CONTROLLER": serialized_model
         }
+
+        # --- BQ UPSERT: bytified model + full history + controller meta into BigQuery ---
+        try:
+            from google.cloud import bigquery
+            from google.api_core.exceptions import NotFound
+        except ImportError as e:
+            print("BigQuery client not available, skipping upsert:", e)
+            print("DATA DISTRIBUTED")
+            return result
+
+        project = os.getenv("BQ_PROJECT")
+        dataset = os.getenv("DS")
+        table = os.getenv("TABLE")
+        model_col = os.getenv("MODEL_COL")
+        data_col = os.getenv("DATA_COL")
+        ctlr_col = os.getenv("CTLR_COL")
+
+        if not (project and dataset and table and model_col and data_col and ctlr_col):
+            print("BigQuery env vars missing (BQ_PROJECT/DS/TABLE/MODEL_COL/DATA_COL/CTL_RCOL), skipping upsert.")
+            print("DATA DISTRIBUTED")
+            return result
+
+        table_id = f"{project}.{dataset}.{table}"
+
+        try:
+            creds = load_service_account_credentials(
+                scopes=["https://www.googleapis.com/auth/bigquery"]
+            )
+            client = bigquery.Client(project=project, credentials=creds)
+        except Exception as e:
+            print("Failed to initialize BigQuery client, skipping upsert:", e)
+            print("DATA DISTRIBUTED")
+            return result
+
+        # Bytify model, history (all time steps), and controller metadata
+        try:
+            model_bytes = self.gnn_layer.serialize(model_skeleton)
+            history_bytes = self.gnn_layer.serialize(history_nodes)
+            ctrl_payload = {
+                "cfg": self.cfg,
+                "AMOUNT_NODES": int(os.getenv("AMOUNT_NODES", "0") or 0),
+                "SIM_TIME": int(os.getenv("SIM_TIME", "0") or 0),
+                "DIMS": int(os.getenv("DIMS", "0") or 0),
+            }
+            ctrl_bytes = self.gnn_layer.serialize(ctrl_payload)
+        except Exception as e:
+            print("Failed to bytify model/history/controller, skipping upsert:", e)
+            print("DATA DISTRIBUTED")
+            return result
+
+        # Ensure target table with BYTES columns exists
+        try:
+            client.get_table(table_id)
+        except NotFound:
+            schema = [
+                bigquery.SchemaField(model_col, bigquery.SqlTypeNames.BYTES),
+                bigquery.SchemaField(data_col, bigquery.SqlTypeNames.BYTES),
+                bigquery.SchemaField(ctlr_col, bigquery.SqlTypeNames.BYTES),
+            ]
+            table_obj = bigquery.Table(table_id, schema=schema)
+            client.create_table(table_obj)
+
+        row = {
+            model_col: model_bytes,
+            data_col: history_bytes,
+            ctlr_col: ctrl_bytes,
+        }
+
+        try:
+            errors = client.insert_rows_json(table_id, [row])
+            if errors:
+                print("BigQuery upsert reported errors:", errors)
+            else:
+                print("BigQuery upsert successful to", table_id)
+        except Exception as e:
+            print("BigQuery upsert failed:", e)
 
         print("DATA DISTRIBUTED")
         return result

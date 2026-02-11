@@ -36,7 +36,50 @@ class FeatureEncoder(nnx.Module):
         self.out_linears:list[nnx.Linear] = []
 
         self.result_blur = .9
+        # --- CTLR: per-timestep controller state (for later iteration / analysis) ---
+        # Structure:
+        #   self.feature_controller[step]["eq"][eq_idx] = {
+        #       "in":  { ... stats about in-features ... },
+        #       "blur":{ ... stats about blur / reuse ... },
+        #       "out": { ... stats about out-features ... },
+        #   }
         self.feature_controller = []
+        # Expose short alias used in docs: feature_encoder.ctlr
+        self.ctlr = self.feature_controller
+        # Tracks current simulation step (set from GNN.simulate via begin_step()).
+        self._current_step = 0
+
+    # --- CTLR helpers ---------------------------------------------------------
+    def begin_step(self, step: int):
+        """
+        Mark start of a simulation step for controller tracking.
+        GNN.simulate(step) should call this once per time step.
+        """
+        try:
+            step = int(step)
+        except Exception:
+            step = int(self._current_step)
+        self._current_step = step
+
+        # ensure outer list has slot for this step
+        while len(self.feature_controller) <= step:
+            self.feature_controller.append({"step": len(self.feature_controller), "eq": {}})
+
+    def _get_ctlr_entry(self, eq_idx: int) -> dict:
+        """
+        Get (and lazily create) controller dict for current step + equation.
+        """
+        step = int(self._current_step)
+        # ensure step slot exists
+        while len(self.feature_controller) <= step:
+            self.feature_controller.append({"step": len(self.feature_controller), "eq": {}})
+
+        step_entry = self.feature_controller[step]
+        if "eq" not in step_entry or step_entry["eq"] is None:
+            step_entry["eq"] = {}
+        if eq_idx not in step_entry["eq"]:
+            step_entry["eq"][eq_idx] = {}
+        return step_entry["eq"][eq_idx]
 
 
     def get_linear_row(self, eq_idx, row_idx):
@@ -108,45 +151,58 @@ class FeatureEncoder(nnx.Module):
         out_linears
     ):
         """
-        GENERATE FEATURES WITH GIVEN LINEARS
-        # todo use segment for pre segementation of
-        # values instead of flatten them again
+        Generate out-features: one embedding per (segment, linear) pair.
+        --- FIX: Accept list of segments (one per out_linear) and loop; vmap fails when
+        axis 0 sizes differ (e.g. flatten_param 36 vs idx 37). ---
         """
         print("gen_feature_single_variation...")
         print("param_grid", type(param_grid))
         print("out_linears", type(out_linears))
 
-        idx_map = jnp.arange(len(out_linears))
+        if not out_linears:
+            pg = jnp.atleast_1d(jnp.asarray(param_grid))
+            if isinstance(param_grid, list):
+                n = len(param_grid)
+            else:
+                n = pg.shape[0]
+            return jnp.zeros((n, self.d_model), dtype=jnp.float32)
 
-        def _work_param(
-                flatten_param,
-                idx:int,
-        ):
-            linear: nnx.Linear = out_linears[idx]
-            # embed
-            return jax.nn.gelu(
-                linear(flatten_param)
-            )
-
+        # --- FIX: param_grid is list of segments (one per linear); loop to avoid vmap size mismatch ---
+        if isinstance(param_grid, (list, tuple)):
+            out_list = []
+            for i, (seg, linear) in enumerate(zip(param_grid, out_linears)):
+                seg = jnp.asarray(seg).ravel()
+                in_len = int(getattr(linear, "in_features", seg.size))
+                if seg.size < in_len:
+                    seg = jnp.concatenate([seg, jnp.zeros(in_len - seg.size, dtype=seg.dtype)])
+                elif seg.size > in_len:
+                    seg = seg[:in_len]
+                out_list.append(jax.nn.gelu(linear(seg)))
+            print("gen_feature_single_variation... done")
+            return jnp.stack(out_list, axis=0)
+        # Fallback: single array (legacy); if leading dim != len(out_linears), loop to avoid vmap mismatch
         try:
             param_grid = jnp.atleast_1d(jnp.asarray(param_grid))
-            kernel = vmap(
-                _work_param,
-                in_axes=(0, 0)
-            )
-
-            feature_block_single_param_grid = kernel(
-                param_grid,
-                idx_map,
-            )
-
-            # working single parameter
-            features = jnp.array(
-                feature_block_single_param_grid
-            )
+            n_rows = param_grid.shape[0]
+            if n_rows != len(out_linears):
+                out_list = []
+                for i in range(len(out_linears)):
+                    in_len = int(jnp.asarray(getattr(out_linears[i], "in_features", 1)).ravel()[0])
+                    seg = param_grid[i] if i < n_rows else jnp.zeros(in_len)
+                    seg = jnp.asarray(seg).ravel()
+                    if seg.size < in_len:
+                        seg = jnp.concatenate([seg, jnp.zeros(in_len - seg.size, dtype=seg.dtype)])
+                    else:
+                        seg = seg[:in_len]
+                    out_list.append(jax.nn.gelu(out_linears[i](seg)))
+                return jnp.stack(out_list, axis=0)
+            idx_map = jnp.arange(len(out_linears))
+            def _work_param(flatten_param, idx: int):
+                return jax.nn.gelu(out_linears[idx](flatten_param))
+            features = vmap(_work_param, in_axes=(0, 0))(param_grid, idx_map)
         except Exception as e:
             print("Err gen_feature_single_variation", e)
-            return jnp.array([])  # CHANGED: always return array so tree_map doesn't get None -> "Expected list, got (...)"
+            return jnp.zeros((len(out_linears), self.d_model), dtype=jnp.float32)
         print("gen_feature_single_variation... done")
         return features
 
@@ -158,10 +214,20 @@ class FeatureEncoder(nnx.Module):
             eq_idx,
             item_idx
     ):
-        # todo where create skeletons?
+        # per-eq, per-param time-series store:
+        # in_store[eq_idx][item_idx][t] -> feature embedding row
         print("_save_in_feature_method_grid...")
         try:
-            # bring to 1d shspae
+            # ensure nested structure exists (robust against partial init)
+            if len(self.in_store) <= eq_idx:
+                self.in_store.extend(
+                    [[] for _ in range(eq_idx + 1 - len(self.in_store))]
+                )
+            if len(self.in_store[eq_idx]) <= item_idx:
+                self.in_store[eq_idx].extend(
+                    [[] for _ in range(item_idx + 1 - len(self.in_store[eq_idx]))]
+                )
+
             self.in_store[eq_idx][item_idx].append(features_tree)
         except Exception as e:
             print("Err _save", e)
@@ -208,79 +274,105 @@ class FeatureEncoder(nnx.Module):
             eq_idx=0,
     ):
         print("create_in_features...")
-        precomputed_results = None
-        _arange = jnp.arange(len(inputs))
-
-        def _save(
-                results,
-                _arange
-        ):
-            self._save_in_feature_method_grid(
-                results,
-                eq_idx,
-                _arange,
-            )
-
         try:
-            # in feature store ts
+            # per-eq, per-param feature embeddings for the current time step
             results = []
             print("len comparishon", len(inputs), len(self.in_linears[eq_idx]), len(axis_def))
-            # create emebddings for all scaled instances
-            for input, linear_insance, ax in zip(inputs, self.in_linears[eq_idx], axis_def):
+
+            # create embeddings for all scaled instances and immediately store them
+            for item_idx, (single_input, linear_instance, ax) in enumerate(
+                zip(inputs, self.in_linears[eq_idx], axis_def)
+            ):
                 f_in_results = self.gen_in_feature_single_variation(
-                    input,
-                    linear_insance,
+                    single_input,
+                    linear_instance,
                     ax,
                 )
                 results.append(f_in_results)
 
-            print("create_in_features results generated...")
+                # append to in_store[eq_idx][item_idx][t]
+                self._save_in_feature_method_grid(
+                    f_in_results,
+                    eq_idx,
+                    item_idx,
+                )
 
-            jax.tree_util.tree_map(
-                lambda leaf: _save(leaf, _arange),
-                results
-            )
+            print("create_in_features results generated...")
+            # --- CTLR: track per-step, per-eq in-feature meta for later iteration ---
+            try:
+                ctl = self._get_ctlr_entry(eq_idx)
+                ctl["in"] = {
+                    "axis_def": tuple(axis_def) if axis_def is not None else None,
+                    "n_params": len(inputs) if inputs is not None else 0,
+                    "in_shapes": [
+                        list(getattr(r, "shape", ())) if hasattr(r, "shape") else None
+                        for r in (results or [])
+                    ],
+                }
+            except Exception as _e_ctlr_in:
+                # keep training/debug robust; controller is best-effort only
+                print("Err ctlr(in):", _e_ctlr_in)
+
             return results
         except Exception as e:
             print("Err create_in_features:", e)
         print("create_in_features... done")
-        return precomputed_results
+        return None
 
 
 
     def blur_result_from_in_tree(
             self,
             eq_idx,
-            high_score_tree,
+            high_score_elements,
             len_variations,
     ):
-        arange = jnp.arange(len_variations)
+        """
+        high_score_elements: list of 1D arrays (one per param), each shape (len_variations,).
+        Returns a list of length len_variations: per-row blur value or None (must recompute).
+        """
+        if len_variations == 0 or not high_score_elements:
+            print("blur_result_from_in_tree... done (no variations)")
+            return jnp.full((max(1, len_variations), self.d_model), jnp.nan)
+
+        # Normalize to (n_params, len_variations) so we can stack (params may have different lengths).
+        def _to_len(s):
+            a = jnp.asarray(s).ravel()
+            n = a.shape[0]
+            if n >= len_variations:
+                return a[:len_variations]
+            return jnp.concatenate([a, jnp.zeros(len_variations - n, dtype=a.dtype)])
+        padded = [ _to_len(s) for s in high_score_elements ]
+        stacked = jnp.stack(padded, axis=0)
+        row_scores = jnp.sum(stacked, axis=0)
+
+        # Sentinel for "must recompute": same shape (d_model,) so vmap gets uniform structure.
+        recompute_sentinel = jnp.full((self.d_model,), jnp.nan)
 
         def _get_blur_val(row_idx):
-            score = jnp.sum(
-                jax.tree_util.tree_map(
-                    lambda x: jnp.take(x, row_idx, axis=0),
-                    jnp.take(jnp.array(high_score_tree), eq_idx),
-                )
-            )
+            score = row_scores[row_idx]
+            if score <= self.result_blur and len(self.out_store) > eq_idx and len(self.out_store[eq_idx]) > 0:
+                last_out = self.out_store[eq_idx][-1]
+                n_out = last_out.shape[0] if hasattr(last_out, "shape") else len(last_out)
+                if row_idx < n_out:
+                    return jnp.asarray(last_out[row_idx])
+            return recompute_sentinel
 
-            if score <= self.result_blur:
-                return jnp.take( # todo may pick from history db
-                    self.out_store[eq_idx],
-                    row_idx,
-                )
-            else:
-                # -> MUST BE CALCED
-                return None
-
-        result = vmap(
-            _get_blur_val,
-            in_axes=(0, 0)
-        )(
-            arange
-        )
-        # todo might take tree_map
+        result = jnp.stack([_get_blur_val(r) for r in range(len_variations)], axis=0)
         print("blur_result_from_in_tree... done")
+
+        # --- CTLR: track blur / reuse statistics for current step & equation ---
+        try:
+            ctl = self._get_ctlr_entry(eq_idx)
+            reuse_mask = row_scores[:len_variations] <= self.result_blur
+            ctl["blur"] = {
+                "len_variations": int(len_variations),
+                "row_scores": jnp.asarray(row_scores[:len_variations]),
+                "reuse_mask": jnp.asarray(reuse_mask),
+            }
+        except Exception as _e_ctlr_blur:
+            print("Err ctlr(blur):", _e_ctlr_blur)
+
         return result
 
 
@@ -292,20 +384,34 @@ class FeatureEncoder(nnx.Module):
             output,
             eq_idx,
     ):
-        # todo include check fr prev time vals to
+        # Track per-time-step out-features for each equation.
         print("FeatureEncoder.out_processor...")
         try:
-            # calc features
+            # --- FIX: Pass list of segments (one per out_linear) to avoid vmap axis size mismatch ---
             results = self.gen_out_feature_single_variation(
                 output,
-                out_linears=self.out_linears[eq_idx]
+                out_linears=self.out_linears[eq_idx],
             )
 
-            # save model tstep
-            jnp.stack([
-                self.out_store[eq_idx],
-                jnp.array(results)
-            ])
+            # lazily init store in case prep() did not run as expected
+            if len(self.out_store) <= eq_idx:
+                self.out_store.extend(
+                    [[] for _ in range(eq_idx + 1 - len(self.out_store))]
+                )
+
+            # append current time-step embedding block
+            out_block = jnp.array(results)
+            self.out_store[eq_idx].append(out_block)
+
+            # --- CTLR: track per-step, per-eq out-feature meta for later iteration ---
+            try:
+                ctl = self._get_ctlr_entry(eq_idx)
+                ctl["out"] = {
+                    "n_out": int(out_block.shape[0]) if hasattr(out_block, "shape") and out_block.ndim >= 1 else 0,
+                    "d_model": int(out_block.shape[1]) if hasattr(out_block, "shape") and out_block.ndim >= 2 else self.d_model,
+                }
+            except Exception as _e_ctlr_out:
+                print("Err ctlr(out):", _e_ctlr_out)
         except Exception as e:
             print("Err FeatureEncoder.out_processor:", e)
         print("FeatureEncoder.out_processor... done")
@@ -348,36 +454,30 @@ class FeatureEncoder(nnx.Module):
         print("get_precomputed_results...")
 
         def generate_high_score_single(param_embedding_item, pre_param_grid):
-            self.fill_blur_vals(
+            return self.fill_blur_vals(
                 param_embedding_item,
                 pre_param_grid,
             )
 
-        def _create_high_score_batch(
-                param_embedding_grid,
-                param_idx,
-        ):
-
-            return vmap(
-                generate_high_score_single,
-                in_axes=(0, None)
-            )(
-                param_embedding_grid,
-                self.in_store[eq_idx][param_idx],
-            )
-
         try:
-            # todo check from 2; avoid indexing in_store when empty (index out of bounds for axis 0 with size 0)
-            # past in features
-            _arange = jnp.arange(
-                len(self.in_store[eq_idx])
-            )
+            high_score_map = []
+            # one entry per param / axis in this equation
+            for param_idx, param_embedding_grid in enumerate(stacked_features_all_params):
+                # if we have no history yet, fall back to zeros
+                if param_idx >= len(self.in_store[eq_idx]) or len(self.in_store[eq_idx][param_idx]) == 0:
+                    high_score_map.append(
+                        jnp.zeros(param_embedding_grid.shape[0])
+                    )
+                    continue
 
-            high_score_map = jax.tree_util.tree_map(
-                _create_high_score_batch,
-                stacked_features_all_params,
-                _arange,
-            )
+                scores = vmap(
+                    generate_high_score_single,
+                    in_axes=(0, None)
+                )(
+                    param_embedding_grid,
+                    self.in_store[eq_idx][param_idx],
+                )
+                high_score_map.append(scores)
         except Exception as e:
             print("Err get_precomputed_results", e)
             high_score_map = []

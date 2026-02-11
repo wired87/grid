@@ -37,6 +37,10 @@ JAX/Flax simulation for field dynamics ($t \to t+1$). Uses **Inject → Filter �
 - **Cross-step invariants** – Define cheap invariants (e.g. conservation, bounds) and check them at each step; invalidate or flag alternative realities that break invariants.
 - **Minimal state for validation** – Store only the minimal state needed to re-validate a time step (e.g. inputs + equation id + blur ref); use for offline checks without full replay.
 
+**Environment / pattern idea (English)**
+
+- The environment influences my pattern (just like thoughts) – it changes patterns in a natural way. Is that \"cheating\"? Everything originates from a single energy injection. This project aims to identify those patterns and inject them into our time.
+
 ---
 
 License:

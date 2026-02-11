@@ -88,10 +88,14 @@ class GNN:
         self.prepare()
         self.simulate()
 
-        serialized = self.serialize(
-            self.feature_encoder.in_ts
+        serialized_in = self.serialize(
+            self.feature_encoder.in_store
         )
-        print("serialized model_skeleton", serialized)
+        serialized_out = self.serialize(
+            self.feature_encoder.out_store
+        )
+        print("serialized serialized_in", serialized_in)
+        print("serialized serialized_out", serialized_out)
 
         jax.debug.print("process finished.")
 
@@ -106,6 +110,7 @@ class GNN:
         self.prep()
 
 
+    # ---------- Engine: simulation loop (Python loop; for JAX-traced version see engine_components.run_simulation_scan) ----------
     def simulate(self):
         try:
             for step in range(self.time):
@@ -114,6 +119,13 @@ class GNN:
                     s=step,
                     n=self.time
                 )
+
+                # --- CTLR: mark current step on feature encoder so it can track per-timestep controller data ---
+                if hasattr(self, "feature_encoder"):
+                    try:
+                        self.feature_encoder.begin_step(step)
+                    except Exception as _e_ctlr_step:
+                        print("Err feature_encoder.begin_step:", _e_ctlr_step)
 
                 # get params from DB layer and init calc
                 all_results = self.calc_batch()
@@ -194,8 +206,6 @@ class GNN:
         # direkt beim shape def i prep anand shape die in features bestimmen#
         # vorproduziert -< in runtime alles direk parat um ctlr zuverwenden
         for eq_idx, eq in enumerate(self.METHODS):
-            #mod_idx = self.get_mod_idx(eq_idx)
-
             variations, amount_params_current_eq, total_amount_params_current_eq = self.extract_eq_variations(
                 eq_idx,
             )
@@ -216,31 +226,38 @@ class GNN:
             transformed = jnp.transpose(variations, (1, 0, 2))
             print("transfrom variations... done")
 
-            # get all in shapes
+            # get all in shapes (per-eq axis + shape definitions)
             self.all_axs.append(axs)
             self.all_shapes.append(shapes)
 
-            #
+            # pre-shorten grids along axes
             transformed = self.short_transformed(
                 self.all_axs[eq_idx],
                 transformed,
             )
 
-            # add empty dim for each eq (act as time feature store
-            self.feature_encoder.in_store.append([])
-            self.feature_encoder.out_store.append([])
-
-            # LINEARS
+            # --- In-features: one Linear per (eq, param, variation) ---
             self.create_in_linears_process(
                 eq_idx,
                 transformed,
                 axis_def=self.all_axs[eq_idx],
             )
+
+            # init per-eq, per-param time stores AFTER linears exist
+            # shape: in_store[eq_idx][param_idx][t] -> feature_row
+            num_in_params = len(self.all_axs[eq_idx])
+            self.feature_encoder.in_store.append(
+                [[] for _ in range(num_in_params)]
+            )
+
+            # --- Out-features: one Linear per (eq, param_out, feature) ---
             # extract coords -> get data (!transformed) -> gen features ->
-            #
             self.create_out_linears_process(
                 eq_idx,
             )
+
+            # shape: out_store[eq_idx][t] -> stacked out-features for this eq
+            self.feature_encoder.out_store.append([])
 
             node = self.create_node(eq, eq_idx)
 
@@ -378,22 +395,30 @@ class GNN:
                 eq_idx,
             )
 
-            _blur = jax.tree_util.tree_map(
-                self.feature_encoder.blur_result_from_in_tree,
-                high_score_elements,
-                eq_idx,
-            )
-            ### ###
-
-
-
-            # reshape flattened batch values
+            # reshape flattened batch values (needed to get node batch size)
             inputs = self.shape_input(
                 eq_idx,
                 flatten_transformed,
             )
-            #print("flatten_transformed", flatten_transformed)
+            # Node vmap batch size = size of mapped axis; use max over batched (axis-0) inputs.
+            batch_size = 0
+            if inputs and axis_def is not None:
+                for i, inp in enumerate(inputs):
+                    if hasattr(inp, "shape") and inp.shape and (i >= len(axis_def) or axis_def[i] == 0):
+                        batch_size = max(batch_size, int(inp.shape[0]))
+            if batch_size == 0 and inputs:
+                batch_size = int(inputs[0].shape[0]) if hasattr(inputs[0], "shape") else 0
 
+            # One blur result per variation row; len_variations = batch_size so vmap sizes match.
+            if not high_score_elements or batch_size == 0:
+                _blur = jnp.full((max(1, batch_size), self.feature_encoder.d_model), jnp.nan)
+            else:
+                _blur = self.feature_encoder.blur_result_from_in_tree(
+                    eq_idx,
+                    high_score_elements,
+                    batch_size,
+                )
+            ### ###
 
             # calc single equation
             results = node(
@@ -402,14 +427,20 @@ class GNN:
                 in_axes_def=axis_def,
             )
 
-            # todo flatten out
-            flatten_out = jnp.array([
-                jnp.ravel(item)
-                for item in results
-            ])
-
+            # --- FIX: Out-features need one segment per out_linear; vmap fails if flatten_out length != len(out_linears) ---
+            # Build one raveled segment per result item; pad/trim to match out_linears count.
+            out_linears_eq = self.feature_encoder.out_linears[eq_idx]
+            segments = [jnp.ravel(item) for item in results]
+            n_linear = len(out_linears_eq)
+            if len(segments) > n_linear:
+                segments = segments[:n_linear]
+            while len(segments) < n_linear:
+                # Pad with zeros; length must match that linear's in_features (use 1 to avoid shape error).
+                lin = out_linears_eq[len(segments)]
+                in_len = int(getattr(lin, "in_features", 1))
+                segments.append(jnp.zeros(in_len, dtype=jnp.float32))
             self.feature_encoder.create_out_features(
-                output=flatten_out,
+                output=segments,
                 eq_idx=eq_idx,
             )
 

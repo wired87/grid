@@ -103,11 +103,12 @@ class Node(nnx.Module):
             return x
 
         def _calc(bres, *item):
-            # bres_padded = jnp.resize(bres_out, run_out.shape)
+            # precomputed_grid rows are (d_model,); NaN means "recompute" (use placeholder for uniform shape)
+            must_recompute = jnp.any(jnp.isnan(bres))
             return jax.lax.cond(
-                bres is None,
-                lambda: blur_result(bres), #todo self.runnable(*item),
-                lambda: blur_result(bres),
+                must_recompute,
+                lambda: jnp.zeros_like(bres),  # placeholder; todo: self.runnable(*item) when shapes match
+                lambda: bres,
             )
 
         kernel = jax.vmap(

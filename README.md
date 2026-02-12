@@ -1,4 +1,4 @@
-# JAX GNN Simulation Engine
+# JAX Graph Time Model (GTM) Simulation Engine
 
 JAX/Flax simulation for field dynamics ($t \to t+1$). Uses **Inject → Filter → Compute → Shift** per step.
 
@@ -12,13 +12,19 @@ JAX/Flax simulation for field dynamics ($t \to t+1$). Uses **Inject → Filter �
 - **GnnModuleChain**: Sequence of `Node` modules (one JAX block).
 - **Node**: Physics unit; equations + state via `nnx.Module`.
 
+## Done (checkbox)
+
+- [x] **Iterator + time ctlr** – Stable architecture: all functions on any time data. `build_time_ctlr(in_store, out_store)` → ctlr `(in_grid, out_grid)`. Iterator methods: `locate_feature(feature, ctlr)`, `inject_time_loop(feature, ctlr, loop_score)`, `scan_in_out_features(ctlr)`, `pattern_recall(param_grid, time_map)`. Simple JAX/lax/vmap, minimal branching, no string values.
+
 ## TODOs
 
+- [x] **Scan in/out features → scores + index within time step** – Implemented in `Iterator.scan_in_out_features(ctlr)` with time ctlr.
 - Track energetic time distribution over time
 - Implement a blur to pre fill results based on in feature line (to not require calcualtion) -> Benedikt is on this
 - Time Iterator: The Model builds on time (There is no Room -> just time is what matters)
 - Implement total tiem step feature
-
+- model payload um ctlr section erweitern 
+- test switch 
 ## Time engine (todo / ideas)
 
 **Current plan**

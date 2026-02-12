@@ -36,13 +36,7 @@ class FeatureEncoder(nnx.Module):
         self.out_linears:list[nnx.Linear] = []
 
         self.result_blur = .9
-        # --- CTLR: per-timestep controller state (for later iteration / analysis) ---
-        # Structure:
-        #   self.feature_controller[step]["eq"][eq_idx] = {
-        #       "in":  { ... stats about in-features ... },
-        #       "blur":{ ... stats about blur / reuse ... },
-        #       "out": { ... stats about out-features ... },
-        #   }
+
         self.feature_controller = []
         # Expose short alias used in docs: feature_encoder.ctlr
         self.ctlr = self.feature_controller

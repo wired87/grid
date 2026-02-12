@@ -98,7 +98,7 @@ class GNN:
         print("serialized serialized_out", serialized_out)
 
         jax.debug.print("process finished.")
-
+        return serialized_in, serialized_out, # todo ctlr
 
     def prepare(self):
         # DB

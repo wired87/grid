@@ -71,6 +71,7 @@ class DBLayer:
         self.gpu = gpu
         self.DIMS = DIMS
         self.history_nodes = []
+
         # For sum_results: arange over equations (same length as LEN_FEATURES_PER_EQ).
         self.DB_CTL_VARIATION_LEN_PER_EQUATION_CUMSUM = len(LEN_FEATURES_PER_EQ)
 
@@ -274,7 +275,8 @@ class DBLayer:
         n_methods = self.METHOD_TO_DB.shape[0]
         try:
             return self._sum_results_impl(flattened_eq_results, n_methods)
-        except BaseException:
+        except Exception as e:
+            print("Err sum_results:", e)
             # --- FIX: Inhomogeneous (19,) or other error: return zeros and do not print so terminal shows no "Err". ---
             return jnp.zeros(max(1, n_methods), dtype=jnp.float32)
 

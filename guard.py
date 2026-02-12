@@ -1,9 +1,11 @@
+import base64
 import json
 import os
+import zoneinfo
 import jax.numpy as jnp
 
-from data_handler.main import load_data
 from data_handler.load_sa_creds import load_service_account_credentials
+from data_handler.main import load_data
 from gnn.gnn import GNN
 
 import jax
@@ -18,6 +20,10 @@ def _to_json_serializable(data):
         return [_to_json_serializable(x) for x in data]
     if isinstance(data, dict):
         return {k: _to_json_serializable(v) for k, v in data.items()}
+    if isinstance(data, bytes):
+        # --- FIX: bytes (e.g. from base64.b64encode) -> decode to string for JSON ---
+        # base64.b64encode returns ASCII-safe bytes, so decode as ASCII
+        return data.decode('ascii')
     if hasattr(data, "shape") and hasattr(data, "tolist"):
         arr = jnp.asarray(data)
         if jnp.iscomplexobj(arr):
@@ -62,6 +68,11 @@ class Guard:
             **self.cfg
         )
 
+        from data_handler.bq_handler import BQCore
+        self.bqclient = BQCore(
+            dataset_id=os.getenv("BQ_DATASET")
+        )
+
 
     def main(self):
         self.run()
@@ -73,24 +84,87 @@ class Guard:
     def run(self):
         # start sim on gpu
         print("run...")
-        self.gnn_layer.main()
+        serialized_in, serialized_out = self.gnn_layer.main()
         print("run... done")
-        self._export_engine_state()
 
-    def _export_engine_state(self, out_path: str = "engine_output.json"):
+        self._export_engine_state(
+            serialized_in,
+            serialized_out,
+        )
+
+    def _export_data(self):
+        print("_export_data...")
+        dl = self.gnn_layer.db_layer
+
+        history = []
+        env_id = os.getenv("ENV_ID")
+
+        for i, item in enumerate(dl.history_nodes):
+            history.append(
+                {
+                    "id": f"{env_id}_{i}",
+                    "data":_to_json_serializable(item),
+                    "env_id": env_id
+                }
+            )
+
+        # INSERT
+        self.bqclient.bq_insert(
+            table_id="data",
+            rows = history
+        )
+        print("_export_data... done")
+
+
+    def _export_ctlr(self):
+        print("_export_ctlr...")
+        dl = self.gnn_layer.db_layer
+        env_id = os.getenv("ENV_ID")
+
+        db_ctlr = {
+            "id": env_id,
+            "OUT_SHAPES": _to_json_serializable(dl.OUT_SHAPES),
+            "SCALED_PARAMS": _to_json_serializable(dl.SCALED_PARAMS),
+            "METHOD_TO_DB": _to_json_serializable(dl.METHOD_TO_DB),
+            "AMOUNT_PARAMS_PER_FIELD": _to_json_serializable(dl.AMOUNT_PARAMS_PER_FIELD),
+            "DB_PARAM_CONTROLLER": _to_json_serializable(dl.DB_PARAM_CONTROLLER),
+            "DB_KEYS": _to_json_serializable(self.cfg["DB_KEYS"]),
+            "FIELD_KEYS": _to_json_serializable(self.cfg["FIELD_KEYS"])
+        }
+
+
+        model_ctlr = {
+            "id": env_id,
+            "VARIATION_KEYS": _to_json_serializable(self.cfg["VARIATION_KEYS"]),
+        }
+
+
+
+        # INSERT
+        self.bqclient.bq_insert(
+            table_id="data",
+            rows = [db_ctlr]
+        )
+        print("_export_ctlr... done")
+
+
+
+    def _export_engine_state(self, serialized_in, serialized_out, out_path: str = "engine_output.json"):
         """Save all generated engine data (history, db, tdb, etc.) to a local .json file."""
         dl = self.gnn_layer.db_layer
         try:
             payload = {
-                "nodes": _to_json_serializable(dl.nodes),
-                "time_construct": _to_json_serializable(dl.time_construct),
-                "history_nodes": _to_json_serializable(dl.history_nodes),
-                "SCALED_PARAMS": _to_json_serializable(dl.SCALED_PARAMS),
-                "OUT_SHAPES": _to_json_serializable(dl.OUT_SHAPES),
-                "METHOD_TO_DB": _to_json_serializable(dl.METHOD_TO_DB),
+                "serialized_out": _to_json_serializable(base64.b64encode(serialized_out).decode('ascii')),
+                "serialized_in": _to_json_serializable(base64.b64encode(serialized_in).decode('ascii')),
+
+                # CTLR
+                "ENERGY_MAP": None,
             }
             if hasattr(dl, "tdb") and dl.tdb is not None:
                 payload["tdb"] = _to_json_serializable(dl.tdb)
+
+            self._upsert_generated_data_to_bq(payload)
+
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, allow_nan=True)
             print("engine state saved to", out_path)
@@ -206,4 +280,16 @@ class Guard:
         print("DATA DISTRIBUTED")
         return result
 
+if __name__ == "__main__":
+    Guard()._upsert_generated_data_to_bq(
+        payload={
+                "nodes": [],
 
+                "history_nodes": [],
+                "SCALED_PARAMS": [],
+                "OUT_SHAPES": [],
+                "METHOD_TO_DB": [],
+                "serialized_out": [],
+                "serialized_in": [],
+            }
+    )

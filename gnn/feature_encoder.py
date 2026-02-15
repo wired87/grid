@@ -121,7 +121,7 @@ class FeatureEncoder(nnx.Module):
             ):
                 if linear:
                     try:
-                        print("param, linear",param, linear)
+                        #print("param, linear",param, linear)
                         embedding = jax.nn.gelu(linear(jnp.array(param)))
                         feature_block_single_param_grid.append(embedding)
 
@@ -150,8 +150,8 @@ class FeatureEncoder(nnx.Module):
         axis 0 sizes differ (e.g. flatten_param 36 vs idx 37). ---
         """
         print("gen_feature_single_variation...")
-        print("param_grid", type(param_grid))
-        print("out_linears", type(out_linears))
+        #print("param_grid", type(param_grid))
+        #print("out_linears", type(out_linears))
 
         if not out_linears:
             pg = jnp.atleast_1d(jnp.asarray(param_grid))

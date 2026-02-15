@@ -24,7 +24,6 @@ def deploy_guard():
     print("deploy_guard finished")
     return ref
 
-
 if __name__ == "__main__":
     from guard import Guard
     guard = Guard()

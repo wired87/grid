@@ -40,7 +40,7 @@ class GNN:
         self.change_store = []
 
         self.gpu = gpu
-
+        # todo use runnable (after first versionnis deplyoed - currently just shcmatic)
         self.db_layer = DBLayer(
             amount_nodes,
             self.gpu,

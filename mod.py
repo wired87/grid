@@ -6,9 +6,7 @@ from flax import linen as nn
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from jax import vmap
 
-from gnn.feature_encoder import FeatureEncoder
 from utils import SHIFT_DIRS, DIM
 
 def test(*args):
@@ -120,20 +118,9 @@ class Node(nnx.Module):
             precomputed_grid,
             *unprocessed_in
         )
+
         print("process_equation... done")
         return result
-
-
-    def features(self, in_axes_def, inputs, input_shapes):
-        kernel = jax.vmap(
-            fun=self.feature_encoder,
-            in_axes=(*in_axes_def, 0, None)
-        )
-        features = kernel(
-            inputs
-        )
-        return features
-
 
 
     def transform_feature(

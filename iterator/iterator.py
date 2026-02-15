@@ -52,7 +52,7 @@ class Iterator:
 
     def run_simulation(self, carry, num_steps, step_fn, *, unroll=1):
         return lax.cond(_ENGINE_COMPONENTS_AVAILABLE, lambda: run_simulation_scan(carry, num_steps, step_fn, unroll=unroll), lambda: carry)
-
+    
     def run_training_step(self, params, batch, loss_fn, *, opt_state=None, opt_update=None):
         return lax.cond(_ENGINE_COMPONENTS_AVAILABLE, lambda: _run_training_step_component(params, batch, loss_fn, opt_state=opt_state, opt_update=opt_update), lambda: (params, opt_state))
 

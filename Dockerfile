@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install
-COPY requirements.txt .
+COPY r.txt .
 RUN pip install --no-cache-dir -r r.txt
 
 # Copy source code
@@ -20,4 +20,4 @@ COPY . .
 ENV PYTHONPATH=/app
 
 # Default command: run the test script
-CMD ["python", "test_gnn_run.py"]
+CMD ["python", "main.py"]

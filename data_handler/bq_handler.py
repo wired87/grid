@@ -11,6 +11,9 @@ from google.api import policy_pb2
 from google.api_core.exceptions import NotFound, Conflict
 from google.cloud.bigquery.table import _EmptyRowIterator
 
+import dotenv
+dotenv.load_dotenv()
+
 from google.cloud import bigquery
 GCP_ID = os.environ['BQ_PROJECT']
 from data_handler.load_sa_creds import load_service_account_credentials

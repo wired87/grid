@@ -26,7 +26,6 @@ class DBLayer:
             DB_CTL_VARIATION_LEN_PER_FIELD,
             LEN_FEATURES_PER_EQ,
             **cfg
-
     ):
         # DB Load and parse
         self.DB = DB
@@ -698,10 +697,7 @@ class DBLayer:
         flattened_method_param_grid_for_all_variations = jax.vmap(
             self.extract_flattened_grid,
             in_axes=0
-        )(
-            variation_param_idx
-        )
-
+        )(variation_param_idx)
 
 
         jax.debug.print("extract_field_param_variation...")
@@ -713,7 +709,7 @@ class DBLayer:
             item,
     ):
         # Extract single parameter flatten grid from db
-        print("extract_flattened_grid")
+        #print("extract_flattened_grid")
         time_dim, mod_idx, fidx, pidx = item
 
         abs_unscaled_param_idx = self.get_rel_db_index(
@@ -725,7 +721,7 @@ class DBLayer:
         _start, _len = self.get_db_index(
             abs_unscaled_param_idx
         )
-        print("_start, _len", _start, _len)
+        #print("_start, _len", _start, _len)
 
         # receive flatten entris
         time_item = jnp.take(
@@ -733,7 +729,7 @@ class DBLayer:
             time_dim,
             axis=0
         )
-        print("time_item set...")
+        #print("time_item set...")
 
         flatten_grid = jax.lax.dynamic_slice_in_dim(
             # set t dim construct to chose from
@@ -744,7 +740,7 @@ class DBLayer:
             _len,
             axis = 0
         )
-        print("extract_flattened_grid... done")
+        #print("extract_flattened_grid... done")
         return flatten_grid
 
 

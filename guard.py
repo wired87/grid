@@ -73,6 +73,11 @@ class Guard:
             dataset_id=os.getenv("BQ_DATASET")
         )
 
+    def divide_vector(self, vec, divisor):
+        """Divide all values of a given vector by divisor. Returns array same shape as vec."""
+        v = jnp.asarray(vec)
+        d = jnp.asarray(divisor)
+        return v / d
 
     def main(self):
         self.run()
@@ -114,6 +119,9 @@ class Guard:
             rows = history
         )
         print("_export_data... done")
+
+    def _(self, *args):
+        return jax.
 
 
     def _export_ctlr(self):

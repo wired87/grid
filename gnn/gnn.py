@@ -666,6 +666,29 @@ class GNN:
             )
         return next_index_map
 
+    def surrounding_check_with_node(self, node, values_flat, start_pos=None):
+        """
+        Build neighbor index map from schema_grid + SHIFT_DIRS and call
+        node.surrounding_check(values_flat, neighbor_index_map).
+        values_flat: 1D array (e.g. one param's grid). start_pos: list of
+        (i,i,i) positions or None for full schema_grid.
+        Returns (n_centers, n_shifts) gathered values.
+        """
+        if start_pos is None:
+            start_pos = self.schema_grid
+        all_dirs = SHIFT_DIRS[0] + SHIFT_DIRS[1]
+        mat = []
+        for pos in start_pos:
+            center_idx = self.schema_grid.index(pos)
+            row = []
+            for d in all_dirs:
+                neighbor_pos = tuple(a + b for a, b in zip(pos, d))
+                idx = self.schema_grid.index(neighbor_pos) if neighbor_pos in self.schema_grid else center_idx
+                row.append(idx)
+            row.append(center_idx)
+            mat.append(row)
+        neighbor_index_map = jnp.array(mat)
+        return node.surrounding_check(values_flat, neighbor_index_map)
 
     def get_index(self, pos: tuple) -> int:
         """Returns the integer index of a grid position."""

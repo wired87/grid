@@ -97,9 +97,6 @@ class Node(nnx.Module):
     ):
         print("process_equation...")
 
-        def blur_result(x):
-            return x
-
         def _calc(bres, *item):
             # precomputed_grid rows are (d_model,); NaN means "recompute" (use placeholder for uniform shape)
             must_recompute = jnp.any(jnp.isnan(bres))
@@ -193,9 +190,25 @@ class Node(nnx.Module):
         ) / dx ** 2
         return lap * active
 
+    def surrounding_check(self, values_flat, neighbor_index_map):
+        """
+        Vmap over the shift dimension: for each applied shift, gather values from
+        values_flat at the neighbor indices. Caller provides neighbor_index_map
+        (e.g. from GNN set_shift + schema_grid + SHIFT_DIRS) with shape
+        (n_centers, n_shifts); each column gives flat indices for one shift.
+        Returns array of shape (n_centers, n_shifts) of gathered values.
+        """
+        values_flat = jnp.asarray(values_flat)
+        neighbor_index_map = jnp.asarray(neighbor_index_map)
+        if neighbor_index_map.ndim != 2:
+            neighbor_index_map = jnp.reshape(neighbor_index_map, (-1, neighbor_index_map.shape[-1]))
+        indices = jnp.asarray(neighbor_index_map, dtype=jnp.int32)
 
+        def gather_for_shift(idx_column):
+            return values_flat[idx_column]
 
-
+        gathered = jax.vmap(gather_for_shift, in_axes=1)(indices)
+        return jnp.transpose(gathered, (1, 0))
 
     def transform_feature(
             self,

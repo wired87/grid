@@ -81,57 +81,60 @@ class DBLayer:
 
 
     def build_db(self, amount_nodes):
-        # receive 1d array _> scale each qx 0 for n nodes
+        # receive 1d array _> scale each qx 0 for n nodes; run for all dims.
+        # Per-dim storage: tree_db = [db_0, db_1, ...] is canonical; nodes = concat(tree_db) for compat.
         jax.debug.print("build_db...")
-
-        SCALED_DB = []
-        TIME_DB = []
-
-        # scale db nodes
+        tree_db = []  # one ndarray per dim: canonical per-dim storage
+        time_db_by_dim = []  # list of list of arrays: one list per dim, same layout as extended DB
+        TIME_DB = []  # flattened: [dim0_ax0, dim0_ax1, ..., dim1_ax0, ...]
+        self.SCALED_PARAMS = []
+        ndims = int(jnp.ravel(self.DIMS)[0]) if hasattr(self.DIMS, "ravel") else int(self.DIMS)
         try:
-            for i, ax in enumerate(self.AXIS):
-                start_param_count = jnp.take(
-                    self.DB_PARAM_CONTROLLER_CUMSUM,
-                    i,
-                )
-
-                len_unscaled_param = jnp.int64(
-                    self.DB_PARAM_CONTROLLER[i]
-                )
-
-                single_param_value = jax.lax.dynamic_slice_in_dim(
-                    self.DB,
-                    start_param_count,
-                    len_unscaled_param,
-                )
-
-                if ax == 0:
-                    slice = jnp.tile(
-                        single_param_value,
-                        amount_nodes*self.DIMS
+            for dim in range(ndims):
+                SCALED_DB_dim = []
+                TIME_DB_dim = []
+                for i, ax in enumerate(self.AXIS):
+                    start_param_count = jnp.take(
+                        self.DB_PARAM_CONTROLLER_CUMSUM,
+                        i,
                     )
-
-                    SCALED_DB.extend(slice)
-                    TIME_DB.append(jnp.array([slice]))
-
-                    self.SCALED_PARAMS.append(
-                        len(slice)
+                    len_unscaled_param = jnp.int64(
+                        self.DB_PARAM_CONTROLLER[i]
                     )
-
-                else:
-                    # const
-                    SCALED_DB.extend(single_param_value)
-                    TIME_DB.append(jnp.array([single_param_value]))
-
-                    self.SCALED_PARAMS.append(len_unscaled_param)
-
+                    single_param_value = jax.lax.dynamic_slice_in_dim(
+                        self.DB,
+                        start_param_count,
+                        len_unscaled_param,
+                    )
+                    if ax == 0:
+                        slice = jnp.tile(
+                            single_param_value,
+                            amount_nodes,
+                        )
+                        SCALED_DB_dim.extend(slice)
+                        TIME_DB_dim.append(jnp.array([slice]))
+                        self.SCALED_PARAMS.append(len(slice))
+                    else:
+                        SCALED_DB_dim.extend(single_param_value)
+                        TIME_DB_dim.append(jnp.array([single_param_value]))
+                        self.SCALED_PARAMS.append(len_unscaled_param)
+                db_dim = jnp.array(SCALED_DB_dim, dtype=jnp.complex64)
+                tree_db.append(db_dim)
+                time_db_by_dim.append(TIME_DB_dim)
+            # Flatten time DB to same layout as extended DB: [dim0_ax0, dim0_ax1, ..., dim1_ax0, ...]
+            TIME_DB = [arr for dim_list in time_db_by_dim for arr in dim_list]
+            self.time_db_by_dim = time_db_by_dim  # collector struct: per-dim list of arrays
+            self.tree_db = tree_db  # canonical per-dim ndarrays
         except Exception as e:
             print("Err build_db", e)
+            TIME_DB = []
+            time_db_by_dim = []
+            tree_db = []
+            self.time_db_by_dim = []
+            self.tree_db = []
 
-
-
-        # scale nodes down db
-        self.nodes = jnp.array(SCALED_DB, dtype=jnp.complex64)
+        # Backward compat: single flat nodes = concat of all dims
+        self.nodes = jnp.concatenate(tree_db) if tree_db else jnp.array([], dtype=jnp.complex64)
         self.SCALED_PARAMS = jnp.array(self.SCALED_PARAMS)
 
         self.SCALED_PARAMS_CUMSUM = jnp.concatenate([
@@ -147,6 +150,7 @@ class DBLayer:
             jnp.cumsum(self.DB_PARAM_CONTROLLER)
         ])
 
+        # Extended DB layout: slot index = dim * len(AXIS) + axis_idx (same for nodes, SCALED_PARAMS, TIME_DB)
         self.tdb = jax.device_put(
             TIME_DB,
             self.gpu,
@@ -195,6 +199,21 @@ class DBLayer:
         except Exception as e:
             print("Err stack_tdb", e)
 
+    def divide_time_values_all_dims(self, divisor):
+        """
+        Divide all time values across dims by divisor (scalar or broadcastable).
+        Updates self.tdb and self.time_construct in place via reassignment.
+        """
+        divisor = jnp.asarray(divisor, dtype=jnp.float32)
+        if hasattr(self.tdb, "at"):
+            self.tdb = self.tdb / divisor
+        else:
+            self.tdb = jax.tree_util.tree_map(
+                lambda arr: jnp.asarray(arr, dtype=jnp.float32) / divisor,
+                self.tdb,
+            )
+        self.time_construct = self.time_construct / divisor
+
     def save_t_step(self, all_results):
         # --- FIX: Flatten/sum/stack/sort must use uniform arrays; on inhomogeneous error skip DB write for this step. ---
         try:
@@ -238,8 +257,9 @@ class DBLayer:
         amount_nodes: Die Anzahl der räumlichen Knoten.
         """
 
-        # 1. Bestimme die Achsen-Regel am Startpunkt
-        axis_rule = self.AXIS[db_start_idx]
+        # 1. Bestimme die Achsen-Regel am Startpunkt (extended DB: slot index = dim*len(AXIS)+ax)
+        n_axis = self.AXIS.shape[0]
+        axis_rule = self.AXIS[db_start_idx % n_axis]
 
         def update_field_block(db, res):
             # Fall: axis == 0 -> Wir ersetzen einen Block der Länge n

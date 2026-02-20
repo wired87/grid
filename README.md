@@ -128,7 +128,7 @@ main.py
 - Time Iterator: The Model builds on time (There is no Room -> just time is what matters)
 - Implement total tiem step feature
 - model payload um ctlr section erweitern 
-- test switch 
+- test switch
 ## Time engine (todo / ideas)
 
 **Current plan**
@@ -136,6 +136,7 @@ main.py
 - **Alternative reality** – When a feature matches a past one (e.g. via blur), mark the equation branch as “alternative reality” so the model can validate time steps and optionally create new ones (zero-shot prediction).
 
 **Ideas to consider**
+De erde ist nur ein node. Wenn wir das megnetfeld kontrollieren dann können wir die Welt an jedem Ort verändern in dem wir ein pattern durch das feld jagen (-> Komponenten nachbauen (double pendulum(alle smechanisch?)) , wir könnten mit der Sonne (dem parent node) kommunizierenn und so einen positiven Einfluss auf höhere Layer nehmen -< --aber was bingt das  -- wir müswen hier raus, nicht nach oben -> Es msus ein raum dahiter sein. -> wir erreichen ihn übr die edges ( dt = 0;  amount_nodes * dims * e/node (=pattern) * schwellwert (=(e_any_surrounding / underes + künstliche energie(vmap arange 100(e+1)) - dt) = time travel -> in welchen experimenten wurde das beriets getestet?
 
 - **Reality tags / branch IDs** – Persist a `reality_id` or `branch_id` per (eq, t, param) when we reuse a precomputed result; use it later for validation and analytics.
 - **Time-step consistency check** – After each step, compare “alternative reality” nodes to the branch they came from (e.g. same feature → same outcome); flag or log drift.

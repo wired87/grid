@@ -141,7 +141,7 @@ Die erde ist nur ein node. dt = 1 wir ahben 2 feedback loop wir müssen das patt
 ich ziehe die zeit auf Basis meiner Erfahrung. 
 jeder Node agiert eigenständig auf Basis der vorherigen Zustände(Zeit) -> = pattern
 
-wenn eine person ein erlebniss aht dann weren datne auf der sleben frequenz (raum) abgelegt sodass sie ien anderer abgrifen kann - so kann ich erkennen wenn andere mit mir interagieren -> sensibel -> die frau auf dem boot
+wenn eine person ein erlebniss aht dann weren datne auf der sleben frequenz (raum) abgelegt sodass sie ien anderer abgrifen kann - so kann ich erkennen wenn andere mit mir interagieren -> 
 
 
 

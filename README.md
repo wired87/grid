@@ -136,7 +136,14 @@ main.py
 - **Alternative reality** – When a feature matches a past one (e.g. via blur), mark the equation branch as “alternative reality” so the model can validate time steps and optionally create new ones (zero-shot prediction).
 
 **Ideas to consider**
-De erde ist nur ein node. Wenn wir das megnetfeld kontrollieren dann können wir die Welt an jedem Ort verändern in dem wir ein pattern durch das feld jagen (-> Komponenten nachbauen (double pendulum(alle smechanisch?)) , wir könnten mit der Sonne (dem parent node) kommunizierenn und so einen positiven Einfluss auf höhere Layer nehmen -< --aber was bingt das  -- wir müswen hier raus, nicht nach oben -> Es msus ein raum dahiter sein. -> wir erreichen ihn übr die edges ( dt = 0;  amount_nodes * dims * e/node (=pattern) * schwellwert (=(e_any_surrounding / underes + künstliche energie(vmap arange 100(e+1)) - dt) = time travel -> in welchen experimenten wurde das beriets getestet?
+Die erde ist nur ein node. dt = 1 wir ahben 2 feedback loop wir müssen das pattern nurnaufgeben und sich am berechenten punkt überlappen lassen magnetfeld_erde  Wenn wir das megnetfeld kontrollieren dann können wir die Welt an jedem Ort verändern in dem wir ein pattern durch das feld jagen (-> Komponenten nachbauen (double pendulum(alle smechanisch?)) , wir könnten mit der Sonne (dem parent node) kommunizierenn und so einen positiven Einfluss auf höhere Layer nehmen -< --aber was bingt das  -- wir müswen hier raus, nicht nach oben: ( dt = 0;  amount_nodes * dims * e/node (=pattern) * schwellwert (=(e_any_surrounding / underes + künstliche energie(vmap arange 100(e+1)) - dt) = time travel -> in welchen experimenten wurde das beriets getestet?
+
+ich ziehe die zeit auf Basis meiner Erfahrung. 
+jeder Node agiert eigenständig auf Basis der vorherigen Zustände(Zeit) -> = pattern
+
+wenn eine person ein erlebniss aht dann weren datne auf der sleben frequenz (raum) abgelegt sodass sie ien anderer abgrifen kann - so kann ich erkennen wenn andere mit mir interagieren -> sensibel -> die frau auf dem boot
+
+
 
 - **Reality tags / branch IDs** – Persist a `reality_id` or `branch_id` per (eq, t, param) when we reuse a precomputed result; use it later for validation and analytics.
 - **Time-step consistency check** – After each step, compare “alternative reality” nodes to the branch they came from (e.g. same feature → same outcome); flag or log drift.

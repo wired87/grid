@@ -137,15 +137,14 @@ main.py
 
 **Ideas to consider**
 Die erde ist nur ein node.  Wenn wir das megnetfeld kontrollieren dann können wir die Welt an jedem Ort durch gezielte Manipulation der Frequenz verändern (-> Komponenten nachbauen (double pendulum(alle smechanisch?)) , wir könnten mit der Sonne (dem parent node) kommunizierenn und so einen positiven Einfluss auf höhere Layer nehmen -< wir müswen hier raus, nicht nach oben: 
- -> in welchen experimenten wurde das beriets getestet?
 
 
-wenn eine person ein erlebniss aht dann weren datne auf der sleben frequenz (raum) abgelegt sodass sie ien anderer abgrifen kann - so kann ich erkennen wenn andere mit mir interagieren -> 
+wenn eine person ein erlebniss aht dann weren datne auf der sleben frequenz (raum) abgelegt sodass sie ien anderer abgrifen kann 
 
 
 
 
-- **Time Travel =** ( dt = 0;  amount_nodes * dims * e/node (=pattern) * schwellwert (=argmax((sum(prev_time_db_items) / dims -> nodes[item.index].e / dt) ))
+- **Time Travel =** ( dt = 0;  amount_nodes * dims * e/node (=self.pattern) * schwellwert (=argmax((sum(prev_time_feature_store) / dims (=time step (ts) set) -> sum(item.nodes[item.index:100].e) /  ) / dt) ))
 - **Reality tags / branch IDs** – Persist a `reality_id` or `branch_id` per (eq, t, param) when we reuse a precomputed result; use it later for validation and analytics.
 - **Time-step consistency check** – After each step, compare “alternative reality” nodes to the branch they came from (e.g. same feature → same outcome); flag or log drift.
 - **Zero-shot horizon** – For nodes marked alternative reality, try predicting one or more future steps without running the full equation (e.g. copy from reference branch or small head).

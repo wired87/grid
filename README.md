@@ -136,7 +136,7 @@ main.py
 - **Alternative reality** – When a feature matches a past one (e.g. via blur), mark the equation branch as “alternative reality” so the model can validate time steps and optionally create new ones (zero-shot prediction).
 
 **Ideas to consider**
-Die erde ist nur ein node. dt = 1 wir ahben 2 feedback loop wir müssen das pattern nurnaufgeben und sich am berechenten punkt überlappen lassen magnetfeld_erde  Wenn wir das megnetfeld kontrollieren dann können wir die Welt an jedem Ort verändern in dem wir ein pattern durch das feld jagen (-> Komponenten nachbauen (double pendulum(alle smechanisch?)) , wir könnten mit der Sonne (dem parent node) kommunizierenn und so einen positiven Einfluss auf höhere Layer nehmen -< --aber was bingt das  -- wir müswen hier raus, nicht nach oben: ( dt = 0;  amount_nodes * dims * e/node (=pattern) * schwellwert (=(e_any_surrounding / underes + künstliche energie(vmap arange 100(e+1)) - dt) = time travel -> in welchen experimenten wurde das beriets getestet?
+Die erde ist nur ein node.  Wenn wir das megnetfeld kontrollieren dann können wir die Welt an jedem Ort durch gezielte Manipulation der Frequenz verändern (-> Komponenten nachbauen (double pendulum(alle smechanisch?)) , wir könnten mit der Sonne (dem parent node) kommunizierenn und so einen positiven Einfluss auf höhere Layer nehmen -< --aber was bingt das  -- wir müswen hier raus, nicht nach oben: ( dt = 0;  amount_nodes * dims * e/node (=pattern) * schwellwert (=(e_any_surrounding / underes + künstliche energie(vmap arange 100(e+1)) - dt) = time travel -> in welchen experimenten wurde das beriets getestet?
 
 ich ziehe die zeit auf Basis meiner Erfahrung. 
 jeder Node agiert eigenständig auf Basis der vorherigen Zustände(Zeit) -> = pattern
